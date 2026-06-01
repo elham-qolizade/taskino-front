@@ -1,10 +1,12 @@
 "use client";
 
 import {
+  ArrowLeft,
   CheckCircle2,
   CircleDashed,
   ClipboardList,
   FolderKanban,
+  Layers3,
   Loader2,
   LogIn,
   LogOut,
@@ -57,7 +59,22 @@ type AuthResponse = {
 
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3000/api";
 
-const taskStatuses = ["todo", "in_progress", "done"];
+const taskBoardColumns = [
+  { status: "todo", title: "در انتظار", accent: "bg-[#8aa0b2]", surface: "bg-[#f4f7fa]" },
+  { status: "in_progress", title: "در حال انجام", accent: "bg-[#1f7a8c]", surface: "bg-[#eef7f8]" },
+  { status: "done", title: "انجام شده", accent: "bg-[#2f8f62]", surface: "bg-[#eff8f3]" },
+];
+
+function nextTaskStatus(status?: string) {
+  if (status === "todo") return "in_progress";
+  if (status === "in_progress") return "done";
+  return "todo";
+}
+
+function taskActionLabel(status?: string) {
+  return `انتقال به ${statusLabel(nextTaskStatus(status))}`;
+}
+
 function getId(item?: { _id?: string; id?: string } | string) {
   if (!item) return "";
   return typeof item === "string" ? item : item._id ?? item.id ?? "";
@@ -67,6 +84,18 @@ function userName(user?: User | string) {
   if (!user) return "نامشخص";
   if (typeof user === "string") return user;
   return [user.firstName, user.lastName].filter(Boolean).join(" ") || user.mobile || user.email || getId(user);
+}
+
+function initials(user?: User | string) {
+  const name = userName(user);
+  if (!name || name === "نامشخص") return "؟";
+  return name
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join("")
+    .toUpperCase();
 }
 
 function statusLabel(status?: string) {
@@ -140,15 +169,18 @@ export default function Home() {
   }, []);
 
   const myId = getId(currentUser ?? undefined);
+  const doneTasks = tasks.filter((task) => task.status === "done").length;
+  const activeTasks = tasks.filter((task) => task.status !== "done").length;
+  const progress = tasks.length ? Math.round((doneTasks / tasks.length) * 100) : 0;
 
   const stats = useMemo(
     () => [
-      { label: "پروژه‌ها", value: projects.length, icon: FolderKanban },
-      { label: "تسک‌ها", value: tasks.length, icon: ClipboardList },
-      { label: "کاربرها", value: users.length, icon: UsersRound },
-      { label: "تکمیل شده", value: tasks.filter((task) => task.status === "done").length, icon: CheckCircle2 },
+      { label: "پروژه‌ها", value: projects.length, hint: "فضاهای فعال", icon: FolderKanban },
+      { label: "تسک‌ها", value: tasks.length, hint: `${activeTasks} باز`, icon: ClipboardList },
+      { label: "کاربرها", value: users.length, hint: "اعضای تیم", icon: UsersRound },
+      { label: "تکمیل شده", value: doneTasks, hint: `${progress}% پیشرفت`, icon: CheckCircle2 },
     ],
-    [projects.length, tasks, users.length],
+    [activeTasks, doneTasks, progress, projects.length, tasks.length, users.length],
   );
 
   useEffect(() => {
@@ -291,8 +323,7 @@ export default function Home() {
   }
 
   async function updateTaskStatus(task: Task) {
-    const currentIndex = taskStatuses.indexOf(task.status ?? "todo");
-    const nextStatus = taskStatuses[(currentIndex + 1) % taskStatuses.length];
+    const nextStatus = nextTaskStatus(task.status);
     setError("");
 
     try {
@@ -446,6 +477,48 @@ export default function Home() {
         </aside>
 
         <div className="space-y-5">
+          <section className="overflow-hidden rounded-lg border border-[#d8e0e7] bg-white/95 shadow-soft ring-1 ring-white/70">
+            <div className="grid gap-0 lg:grid-cols-[1fr_280px]">
+              <div className="p-5">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <div className="flex items-center gap-2 text-sm font-semibold text-[#1f7a8c]">
+                      <Layers3 size={17} />
+                      فضای کاری امروز
+                    </div>
+                    <h2 className="mt-2 text-2xl font-bold text-[#15202b]">برد عملیاتی تسکینو</h2>
+                    <p className="mt-2 max-w-2xl text-sm leading-6 text-[#687887]">
+                      تسک‌ها را بین ستون‌ها جابه‌جا کن، پروژه‌ها را بساز و وضعیت تیم را از همین صفحه دنبال کن.
+                    </p>
+                  </div>
+                  <button
+                    className="flex h-10 shrink-0 items-center justify-center gap-2 rounded-lg border border-[#cfd9e2] bg-white px-3 text-sm font-semibold text-[#314150] transition hover:bg-[#f3f6f8]"
+                    onClick={() => loadData()}
+                    type="button"
+                  >
+                    {loadingData ? <Loader2 className="animate-spin" size={17} /> : <RefreshCw size={17} />}
+                    همگام‌سازی
+                  </button>
+                </div>
+                <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                  <MiniMetric label="تسک‌های باز" value={activeTasks} />
+                  <MiniMetric label="اعضای قابل انتخاب" value={users.length} />
+                  <MiniMetric label="پروژه‌های ثبت‌شده" value={projects.length} />
+                </div>
+              </div>
+              <div className="border-t border-[#e5ebf0] bg-[#f8fbfc] p-5 lg:border-r lg:border-t-0">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold text-[#526575]">پیشرفت تسک‌ها</span>
+                  <span className="text-2xl font-bold text-[#15202b]">{progress}%</span>
+                </div>
+                <div className="mt-4 h-2.5 overflow-hidden rounded-full bg-[#e2eaf0]">
+                  <div className="h-full rounded-full bg-[#1f7a8c] transition-all" style={{ width: `${progress}%` }} />
+                </div>
+                <p className="mt-3 text-sm leading-6 text-[#687887]">{doneTasks} تسک از {tasks.length} تسک تکمیل شده است.</p>
+              </div>
+            </div>
+          </section>
+
           <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {stats.map((stat) => (
               <div key={stat.label} className="group overflow-hidden rounded-lg border border-[#d8e0e7] bg-white/95 shadow-soft ring-1 ring-white/70 transition hover:-translate-y-0.5 hover:border-[#bdd1db]">
@@ -458,55 +531,86 @@ export default function Home() {
                   </span>
                 </div>
                 <p className="mt-3 text-3xl font-bold">{stat.value}</p>
+                <p className="mt-1 text-xs font-medium text-[#7a8a98]">{stat.hint}</p>
                 </div>
               </div>
             ))}
           </section>
 
-          <section className="grid gap-5 xl:grid-cols-[1fr_360px]">
-            <div className="overflow-hidden rounded-lg border border-[#d8e0e7] bg-white/95 shadow-soft ring-1 ring-white/70">
-              <div className="flex items-center justify-between border-b border-[#e5ebf0] bg-[#fbfcfd] p-4">
-                <h2 className="text-lg font-bold">تسک‌ها</h2>
-                <span className="text-sm text-[#687887]">{tasks.length} مورد</span>
+          <section className="overflow-hidden rounded-lg border border-[#d8e0e7] bg-white/95 shadow-soft ring-1 ring-white/70">
+            <div className="flex flex-col gap-2 border-b border-[#e5ebf0] bg-[#fbfcfd] p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-lg font-bold">برد تسک‌ها</h2>
+                <p className="mt-1 text-sm text-[#687887]">نمای کانبان برای پیگیری سریع وضعیت کارها</p>
               </div>
-              <div className="divide-y divide-[#edf1f5]">
-                {tasks.length === 0 ? (
-                  <EmptyState title="هنوز تسکی نیست" text="اولین تسک را از فرم سمت راست بساز." />
-                ) : (
-                  tasks.map((task) => (
-                    <div key={getId(task)} className="flex flex-col gap-3 p-4 transition hover:bg-[#f8fbfc] md:flex-row md:items-center md:justify-between">
-                      <div className="min-w-0">
-                        <p className="truncate font-semibold">{task.title}</p>
-                        <p className="mt-1 text-sm text-[#687887]">
-                          مسئول: {task.assignedTo?.length ? task.assignedTo.map((user) => userName(user)).join("، ") : "نامشخص"}
-                        </p>
-                      </div>
-                      <button
-                        className="flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg border border-[#cfd9e2] bg-white px-3 text-sm font-semibold text-[#314150] transition hover:border-[#1f7a8c]/40 hover:bg-[#f3f8fa]"
-                        onClick={() => updateTaskStatus(task)}
-                        type="button"
-                      >
-                        {task.status === "done" ? <CheckCircle2 size={16} /> : <CircleDashed size={16} />}
-                        {statusLabel(task.status)}
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
+              <span className="rounded-lg bg-[#eef3f6] px-3 py-1.5 text-sm font-semibold text-[#526575]">{tasks.length} تسک</span>
             </div>
+            <div className="grid gap-3 p-4 lg:grid-cols-3">
+              {taskBoardColumns.map((column) => {
+                const columnTasks = tasks.filter((task) => (task.status ?? "todo") === column.status);
 
-            <section className="rounded-lg border border-[#d8e0e7] bg-white/95 p-4 shadow-soft ring-1 ring-white/70">
-              <h2 className="border-b border-[#edf1f5] pb-3 text-lg font-bold">ساخت پروژه</h2>
-              <form className="mt-4 space-y-3" onSubmit={createProject}>
-                <Field label="عنوان پروژه" name="projectTitle" value={projectTitle} onChange={setProjectTitle} required />
-                <Field label="توضیحات" name="projectDescription" value={projectDescription} onChange={setProjectDescription} />
-                <Select label="عضو اولیه" value={projectMember} onChange={setProjectMember} options={users.map((user) => [getId(user), userName(user)])} />
-                <button className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#233142] px-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[#1c2836]" type="submit">
+                return (
+                  <section key={column.status} className={`min-h-[300px] rounded-lg border border-[#dce3e9] ${column.surface} p-3`}>
+                    <div className="mb-3 flex items-center justify-between rounded-lg bg-white/70 px-3 py-2 shadow-sm">
+                      <div className="flex items-center gap-2">
+                        <span className={`h-2.5 w-2.5 rounded-full ${column.accent}`} />
+                        <h3 className="font-bold text-[#263543]">{column.title}</h3>
+                      </div>
+                      <span className="rounded-md bg-white px-2 py-1 text-xs font-semibold text-[#657483] shadow-sm">{columnTasks.length}</span>
+                    </div>
+
+                    <div className="space-y-3">
+                      {columnTasks.length === 0 ? (
+                        <div className="rounded-lg border border-dashed border-[#cad6df] bg-white/60 p-5 text-center text-sm leading-6 text-[#748493]">
+                          این ستون خلوت است.
+                        </div>
+                      ) : (
+                        columnTasks.map((task) => (
+                          <article key={getId(task)} className="rounded-lg border border-[#d8e0e7] bg-white p-3 shadow-sm transition hover:-translate-y-0.5 hover:border-[#bdd1db] hover:shadow-soft">
+                            <div className="flex items-start justify-between gap-3">
+                              <h4 className="min-w-0 truncate font-bold text-[#1d2733]">{task.title}</h4>
+                              {task.status === "done" ? <CheckCircle2 className="shrink-0 text-[#2f8f62]" size={18} /> : <CircleDashed className="shrink-0 text-[#1f7a8c]" size={18} />}
+                            </div>
+                            <div className="mt-3 flex items-center justify-between gap-3">
+                              <AssigneeStack users={task.assignedTo} />
+                              <span className="rounded-md bg-[#f3f6f8] px-2 py-1 text-xs font-semibold text-[#657483]">{statusLabel(task.status)}</span>
+                            </div>
+                            {task.status !== "done" && (
+                              <button
+                                className="mt-4 flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-[#cfd9e2] bg-[#fbfcfd] px-3 text-sm font-semibold text-[#314150] transition hover:border-[#1f7a8c]/40 hover:bg-[#f3f8fa]"
+                                onClick={() => updateTaskStatus(task)}
+                                type="button"
+                              >
+                                {taskActionLabel(task.status)}
+                                <ArrowLeft size={15} />
+                              </button>
+                            )}
+                          </article>
+                        ))
+                      )}
+                    </div>
+                  </section>
+                );
+              })}
+            </div>
+          </section>
+
+          <section className="rounded-lg border border-[#d8e0e7] bg-white/95 p-4 shadow-soft ring-1 ring-white/70">
+            <div className="flex flex-col gap-1 border-b border-[#edf1f5] pb-3 sm:flex-row sm:items-center sm:justify-between">
+              <h2 className="text-lg font-bold">ساخت پروژه</h2>
+              <span className="text-sm text-[#687887]">پروژه جدید را به برد اضافه کن</span>
+            </div>
+            <form className="mt-4 grid gap-3 xl:grid-cols-[1fr_1fr_220px_auto]" onSubmit={createProject}>
+              <Field label="عنوان پروژه" name="projectTitle" value={projectTitle} onChange={setProjectTitle} required />
+              <Field label="توضیحات" name="projectDescription" value={projectDescription} onChange={setProjectDescription} />
+              <Select label="عضو اولیه" value={projectMember} onChange={setProjectMember} options={users.map((user) => [getId(user), userName(user)])} />
+              <div className="flex items-end">
+                <button className="flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#233142] px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-[#1c2836] xl:w-auto" type="submit">
                   <Plus size={17} />
                   افزودن پروژه
                 </button>
-              </form>
-            </section>
+              </div>
+            </form>
           </section>
 
           <section className="overflow-hidden rounded-lg border border-[#d8e0e7] bg-white/95 shadow-soft ring-1 ring-white/70">
@@ -519,16 +623,22 @@ export default function Home() {
                 <EmptyState title="پروژه‌ای ثبت نشده" text="یک پروژه بساز تا لیست اینجا پر شود." />
               ) : (
                 projects.map((project) => (
-                  <article key={getId(project)} className="rounded-lg border border-[#dce3e9] border-r-4 border-r-[#1f7a8c] bg-white p-4 transition hover:border-[#bdd1db] hover:shadow-soft">
+                  <article key={getId(project)} className="rounded-lg border border-[#dce3e9] bg-white p-4 transition hover:border-[#bdd1db] hover:shadow-soft">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <h3 className="truncate font-bold">{project.title}</h3>
+                        <div className="flex items-center gap-2">
+                          <span className="h-9 w-1 rounded-full bg-[#1f7a8c]" />
+                          <h3 className="truncate font-bold">{project.title}</h3>
+                        </div>
                         <p className="mt-2 line-clamp-2 text-sm text-[#687887]">{project.description || "بدون توضیحات"}</p>
                       </div>
                       <span className="rounded-md bg-[#e7f4f2] px-2 py-1 text-xs font-semibold text-[#1f7a8c]">{statusLabel(project.status)}</span>
                     </div>
-                    <div className="mt-4 flex flex-wrap gap-2 text-xs text-[#526575]">
-                      <span className="rounded-md bg-[#f3f6f8] px-2 py-1">مالک: {userName(project.owner)}</span>
+                    <div className="mt-4 flex items-center justify-between gap-3 border-t border-[#edf1f5] pt-3">
+                      <AssigneeStack users={project.members} fallback={project.owner} />
+                      <span className="rounded-md bg-[#f3f6f8] px-2 py-1 text-xs font-semibold text-[#526575]">مالک: {userName(project.owner)}</span>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2 text-xs text-[#526575]">
                       <span className="rounded-md bg-[#f3f6f8] px-2 py-1">اعضا: {project.members?.length ?? 0}</span>
                       <span className="rounded-md bg-[#f3f6f8] px-2 py-1">تسک‌ها: {project.tasks?.length ?? 0}</span>
                     </div>
@@ -600,6 +710,46 @@ function Select({
         ))}
       </select>
     </label>
+  );
+}
+
+function MiniMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-lg border border-[#e2e9ef] bg-[#fbfcfd] px-4 py-3">
+      <p className="text-xs font-semibold text-[#748493]">{label}</p>
+      <p className="mt-1 text-2xl font-bold text-[#1d2733]">{value}</p>
+    </div>
+  );
+}
+
+function AssigneeStack({
+  users,
+  fallback,
+}: {
+  users?: Array<string | User>;
+  fallback?: string | User;
+}) {
+  const visibleUsers = users?.length ? users.slice(0, 3) : fallback ? [fallback] : [];
+
+  if (!visibleUsers.length) {
+    return <span className="text-xs font-medium text-[#8a98a5]">بدون مسئول</span>;
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex -space-x-2 space-x-reverse">
+        {visibleUsers.map((user, index) => (
+          <span
+            className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-white bg-[#e7f4f2] text-xs font-bold text-[#1f7a8c] shadow-sm"
+            key={`${userName(user)}-${index}`}
+            title={userName(user)}
+          >
+            {initials(user)}
+          </span>
+        ))}
+      </div>
+      <span className="min-w-0 truncate text-xs font-semibold text-[#657483]">{userName(visibleUsers[0])}</span>
+    </div>
   );
 }
 
