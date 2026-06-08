@@ -3,47 +3,70 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: light;
-  --background: #f6f8fb;
-  --foreground: #1d2733;
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --surface-2: #f1f5f9;
+  --border: #e2e8f0;
+  --border-light: #f1f5f9;
+  --text: #0f172a;
+  --text-2: #64748b;
+  --text-3: #94a3b8;
+  --primary: #1f7a8c;
+  --primary-light: #e8f4f7;
 }
 
-* {
-  box-sizing: border-box;
+.dark {
+  --bg: #0f172a;
+  --surface: #1e293b;
+  --surface-2: #162032;
+  --border: #334155;
+  --border-light: #1e293b;
+  --text: #f1f5f9;
+  --text-2: #94a3b8;
+  --text-3: #64748b;
+  --primary: #2a9db2;
+  --primary-light: #0f3040;
 }
+
+* { box-sizing: border-box; }
 
 html {
   min-height: 100%;
-  background: var(--background);
+  background: var(--bg);
 }
 
 body {
   min-height: 100%;
   margin: 0;
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Vazirmatn', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  transition: background-color 0.2s, color 0.2s;
 }
 
-body::before {
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  content: "";
-  background-image:
-    linear-gradient(rgba(31, 122, 140, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(31, 122, 140, 0.045) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(239, 244, 248, 0.92));
-  background-size: 56px 56px, 56px 56px, 100% 100%;
+button, input, select, textarea { font: inherit; }
+button { -webkit-tap-highlight-color: transparent; cursor: pointer; }
+::selection { background: #cce9ef; color: var(--text); }
+
+/* Skeleton animation */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
 }
 
-button,
-input,
-select,
-textarea {
-  font: inherit;
+.skeleton {
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--border) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite;
 }
 
-button {
-  -webkit-tap-highlight-color: transparent;
+/* Drag and drop */
+.dragging {
+  opacity: 0.8;
+  transform: rotate(1deg) scale(1.02);
 }
+
+/* Scrollbar hide */
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
