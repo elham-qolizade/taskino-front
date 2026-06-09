@@ -6,7 +6,7 @@
     "dev": "next dev --webpack -p 3001",
     "dev:3001": "next dev --webpack -p 3001",
     "build": "next build --webpack",
-    "start": "next start",
+    "start": "next start -p 3001",
     "lint": "eslint ."
   },
   "dependencies": {
