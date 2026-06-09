@@ -894,7 +894,7 @@ export default function Home() {
                     </label>
                   </>
                 )}
-                <Field label="موبایل" name="mobile" required placeholder="09xxxxxxxxx" />
+                <Field label="موبایل" name="mobile" required placeholder="09xxxxxxxxx" dir="ltr" inputMode="tel" />
                 <Field label="رمز عبور" name="password" required type="password" placeholder="حداقل ۶ کاراکتر" />
                 <button className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#1f7a8c] text-sm font-semibold text-white shadow-lg shadow-[#1f7a8c]/25 transition-all hover:bg-[#196b7b] active:scale-[0.98] disabled:opacity-60" disabled={authLoading} type="submit">
                   {authLoading ? <Loader2 className="animate-spin" size={18} /> : <LogIn size={18} />}
@@ -2801,16 +2801,17 @@ function TaskPanel({
 }
 
 // ─── Shared components ────────────────────────────────────────────────────────
-function Field({ label, name, id, required, type = "text", value, onChange, placeholder }: {
+function Field({ label, name, id, required, type = "text", value, onChange, placeholder, dir, inputMode }: {
   label: string; name: string; id?: string; required?: boolean; type?: string;
   value?: string; onChange?: (v: string) => void; placeholder?: string;
+  dir?: "ltr" | "rtl"; inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
 }) {
   return (
     <label className="block">
       {label && <span className="mb-1.5 block text-xs font-semibold text-[--text-2]">{label}</span>}
       <input
-        id={id}
-        className="h-10 w-full rounded-lg border border-[--border] bg-[--surface] px-3 text-sm text-[--text] outline-none transition placeholder:text-[--text-3] focus:border-[#1f7a8c] focus:ring-2 focus:ring-[#1f7a8c]/15"
+        id={id} dir={dir} inputMode={inputMode}
+        className={`h-10 w-full rounded-lg border border-[--border] bg-[--surface] px-3 text-sm text-[--text] outline-none transition placeholder:text-[--text-3] focus:border-[#1f7a8c] focus:ring-2 focus:ring-[#1f7a8c]/15 ${dir === "ltr" ? "text-left" : ""}`}
         name={name} onChange={(e) => onChange?.(e.target.value)} required={required} type={type} value={value} placeholder={placeholder}
       />
     </label>
