@@ -331,6 +331,8 @@ export default function Home() {
   const [ftRecurrence, setFtRecurrence] = useState<"daily" | "weekly" | "monthly">("daily");
   const [ftDescription, setFtDescription] = useState("");
   const [ftProjectId, setFtProjectId] = useState("");
+  const [ftActive, setFtActive] = useState(false);
+  const [ftNextRunAt, setFtNextRunAt] = useState("");
 
   // Manager analytics state
   const [managerTaskStatus, setManagerTaskStatus] = useState<TaskStatusOverview | null>(null);
@@ -501,6 +503,11 @@ export default function Home() {
         fetchAllFixedTasks(authToken, uid ? { assignedTo: uid } : {})
           .then((r) => setFixedTasks(r))
           .catch(() => {});
+      } else if (uid) {
+        // Specialist: public per-user endpoint (no role restriction).
+        fetchAllSpecialistFixedTasks(authToken, uid)
+          .then((r) => setFixedTasks(r))
+          .catch(() => setFixedTasks([]));
       } else {
         setFixedTasks([]);
       }
@@ -518,6 +525,22 @@ export default function Home() {
     const limit = 100;
     for (let page = 1; page <= 50; page++) {
       const res = await fixedTaskApi.list(authToken, { ...base, page, limit }).catch(() => null);
+      if (!res) break;
+      const list = normalizeList(res as FixedTask[] | { data?: FixedTask[] });
+      all.push(...list);
+      const total = (res && typeof res === "object" && "total" in (res as Record<string, unknown>))
+        ? Number((res as Record<string, unknown>).total) : all.length;
+      if (list.length === 0 || all.length >= total) break;
+    }
+    return all;
+  }
+
+  // Specialist's own fixed tasks via the public per-user endpoint, across pages.
+  async function fetchAllSpecialistFixedTasks(authToken: string, userId: string) {
+    const all: FixedTask[] = [];
+    const limit = 100;
+    for (let page = 1; page <= 50; page++) {
+      const res = await fixedTaskApi.bySpecialist(authToken, userId, { page, limit }).catch(() => null);
       if (!res) break;
       const list = normalizeList(res as FixedTask[] | { data?: FixedTask[] });
       all.push(...list);
@@ -926,10 +949,13 @@ export default function Home() {
       setFtRecurrence(ft.recurrence);
       setFtDescription(ft.description ?? "");
       setFtProjectId(getId(ft.projectId));
+      setFtActive(ft.isActive !== false);
+      setFtNextRunAt(ft.nextRunAt ? ft.nextRunAt.slice(0, 16) : "");
     } else {
       setEditingFixedTask(null);
       setFtTitle(""); setFtAssignee(""); setFtRecurrence("daily");
       setFtDescription(""); setFtProjectId("");
+      setFtActive(false); setFtNextRunAt("");
     }
     setShowFixedTaskForm(true);
   }
@@ -948,6 +974,8 @@ export default function Home() {
       recurrence: ftRecurrence,
       description: ftDescription.trim() || undefined,
       projectId: ftProjectId || undefined,
+      isActive: ftActive,
+      ...(ftNextRunAt ? { nextRunAt: new Date(ftNextRunAt).toISOString() } : {}),
     };
     try {
       if (editingFixedTask) {
@@ -2247,7 +2275,14 @@ export default function Home() {
                           <button className="flex h-10 w-10 items-center justify-center rounded-lg border border-[--border] bg-[--surface] text-[--text-2] transition hover:bg-[--surface-2]" onClick={closeFixedTaskForm} type="button"><X size={15} /></button>
                         </div>
                       </form>
-                      <Field label="توضیحات" name="ftDescription" value={ftDescription} onChange={setFtDescription} placeholder="اختیاری" />
+                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                        <Field label="توضیحات" name="ftDescription" value={ftDescription} onChange={setFtDescription} placeholder="اختیاری" />
+                        <Field label="زمان اجرا (اختیاری)" name="ftNextRunAt" type="datetime-local" value={ftNextRunAt} onChange={setFtNextRunAt} />
+                      </div>
+                      <label className="mt-3 flex w-fit cursor-pointer items-center gap-2 text-sm text-[--text-2]">
+                        <input type="checkbox" className="h-4 w-4 accent-[#1f7a8c]" checked={ftActive} onChange={(e) => setFtActive(e.target.checked)} />
+                        همین حالا فعال باشد (پیش‌فرض: غیرفعال تا زمان فعال‌سازی)
+                      </label>
                     </div>
                   )}
 

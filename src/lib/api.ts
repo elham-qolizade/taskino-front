@@ -453,6 +453,8 @@ export const taskApi = {
     request<Record<string, unknown>>("/tasks/date-count", { method: "POST", body: JSON.stringify(body) }, token),
   byUserName: (token: string, userName: string, lastName: string) =>
     request<Task[] | { data?: Task[] }>(`/tasks/user${qs({ userName, lastName })}`, {}, token),
+  bySpecialist: (token: string, userId: string, params?: Record<string, string | number | undefined>) =>
+    request<Task[] | { data?: Task[] }>(`/tasks/specialist/${userId}${qs(params)}`, {}, token),
 };
 
 // ─── Manager ─────────────────────────────────────────────────────────────────
@@ -530,6 +532,8 @@ export const fixedTaskApi = {
     request<IncompleteFixedTask[] | { data?: IncompleteFixedTask[] }>(`/fixed-tasks/reports/incomplete${qs(params)}`, {}, token),
   seedFromExcel: (token: string) =>
     request<{ message?: string; usersCreated?: number; fixedTasksCreated?: number }>("/fixed-tasks/seed/excel", { method: "POST" }, token),
+  bySpecialist: (token: string, userId: string, params?: Record<string, string | number | undefined>) =>
+    request<FixedTask[] | { data?: FixedTask[] }>(`/fixed-tasks/specialist/${userId}${qs(params)}`, {}, token),
 };
 
 // ─── Leave Requests ──────────────────────────────────────────────────────────
