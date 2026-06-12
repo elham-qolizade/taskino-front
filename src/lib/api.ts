@@ -106,6 +106,16 @@ export type ProjectProgressItem = {
 };
 
 export type SupervisorStats = {
+  recurrence?: string | null;
+  supervisedTasks?: number;
+  supervisedFixedTasks?: number;
+  supervisedInProgressTasks?: number;
+  supervisedInProgressFixedTasks?: number;
+  myInProgressTasks?: number;
+  myInProgressFixedTasks?: number;
+  mySuccessfulTasks?: number;
+  myOnTimeSuccessfulTasks?: number;
+  // legacy fields (still referenced by older supervisor views)
   supervisedProjects?: number;
   supervisedProjectsInProgressTasks?: number;
   participatingProjectsDoneTasks?: number;
@@ -113,6 +123,24 @@ export type SupervisorStats = {
   inProgressTasks?: number;
   successfulTasksInProjects?: number;
   successfulTasksAssignedToSupervisor?: number;
+};
+
+export type SupervisorMember = {
+  _id?: string;
+  id?: string;
+  userId?: string;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  role?: string;
+  isActive?: boolean;
+  score?: number;
+  progressPercentage?: number;
+  performanceStatus?: string;
+  assignedTasks?: number;
+  completedTasks?: number;
+  assignedFixedTasks?: number;
+  completedFixedTasks?: number;
 };
 
 export type MemberPerformance = {

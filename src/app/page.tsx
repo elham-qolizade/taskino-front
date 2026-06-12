@@ -313,6 +313,8 @@ export default function Home() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [popupNotif, setPopupNotif] = useState<Notification | null>(null);
+  const [rejectLeaveId, setRejectLeaveId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
   const seenNotifRef = useRef<Set<string>>(new Set());
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
   const [excelFiles, setExcelFiles] = useState<ExcelFile[]>([]);
@@ -473,14 +475,14 @@ export default function Home() {
       const userIsSupervisor = currentRole === "supervisor";
       const reportParams = !userIsManager && !userIsSupervisor && uid ? { assignedTo: uid } : undefined;
       const [u, t, leaves, statsRes, unreadRes, notifRes] = await Promise.all([
-        userIsManager ? managerApi.users(authToken, { limit: 100 }).catch(() => userApi.list(authToken).catch(() => [])) : userApi.list(authToken).catch(() => []),
+        userIsManager ? managerApi.users(authToken, { limit: 100 }).catch(() => []) : Promise.resolve([] as User[]),
         userIsManager
           ? managerApi.allTasks(authToken).catch(() => ({ tasks: [] as Task[] }))
           : taskApi.list(authToken, reportParams).catch(() => []),
         uid && !userIsManager && !userIsSupervisor
           ? leaveApi.list(authToken, { limit: 50, user: uid })
           : leaveApi.list(authToken, { limit: 50 }),
-        managerApi.statistics(authToken).catch(() => null),
+        userIsManager ? managerApi.statistics(authToken).catch(() => null) : Promise.resolve(null),
         notificationApi.unreadCount(authToken).catch(() => ({ unreadCount: 0 })),
         notificationApi.list(authToken, { isRead: false, limit: 20 }).catch(() => []),
       ]);
@@ -493,11 +495,13 @@ export default function Home() {
       setNotifications(normalizeList(notifRes as Notification[] | { data?: Notification[] }));
       const role = (currentUser ?? storedUser)?.roles;
       if (role === "manager") void loadManagerAnalytics(authToken);
-      else {
-        // Fixed tasks (recurring reports) for the board — scoped to the current user.
+      else if (role === "supervisor") {
+        // GET /fixed-tasks is allowed for manager/supervisor only (specialist → 403).
         fixedTaskApi.list(authToken, uid ? { assignedTo: uid, limit: 50 } : { limit: 50 })
           .then((r) => setFixedTasks(normalizeList(r)))
           .catch(() => {});
+      } else {
+        setFixedTasks([]);
       }
       if (role === "supervisor") void loadSupervisorData(authToken);
     } catch (err) {
@@ -510,12 +514,11 @@ export default function Home() {
   async function loadManagerAnalytics(authToken = token) {
     if (!authToken) return;
     try {
-      const [taskStatus, userCounts, monthlyPerf, recurring, incomplete, progress] = await Promise.all([
+      const [taskStatus, userCounts, monthlyPerf, recurring, progress] = await Promise.all([
         managerApi.taskStatusOverview(authToken).catch(() => null),
         managerApi.taskCountsByUsers(authToken).catch(() => []),
         managerApi.monthlyPerformance(authToken).catch(() => []),
         fixedTaskApi.list(authToken, { limit: 50 }).catch(() => []),
-        fixedTaskApi.incompleteReport(authToken, { limit: 50 }).catch(() => []),
         managerApi.usersProgress(authToken).catch(() => []),
       ]);
       setManagerTaskStatus(taskStatus);
@@ -523,7 +526,6 @@ export default function Home() {
       const monthlyRaw = monthlyPerf as any;
       setManagerMonthlyPerf(monthlyRaw?.users ? monthlyRaw.users : normalizeList(monthlyRaw as MonthlyPerformance[] | { data?: MonthlyPerformance[] }));
       setFixedTasks(normalizeList(recurring as FixedTask[] | { data?: FixedTask[] }));
-      setIncompleteFixedTasks(normalizeList(incomplete as IncompleteFixedTask[] | { data?: IncompleteFixedTask[] }));
       setManagerUserProgress(normalizeList(progress as UserProgress[] | { data?: UserProgress[] }));
     } catch {}
   }
@@ -696,12 +698,23 @@ export default function Home() {
 
   async function handleLeaveAction(id: string, action: "approve" | "reject") {
     if (!myId) return;
+    if (action === "reject") { setRejectReason("عدم تأیید مدیر"); setRejectLeaveId(id); return; }
     try {
-      if (action === "approve") await leaveApi.approve(token, id, myId);
-      else await leaveApi.reject(token, id, myId);
-      setMessage(action === "approve" ? "مرخصی تأیید شد." : "مرخصی رد شد.");
+      await leaveApi.approve(token, id, myId);
+      setMessage("مرخصی تأیید شد.");
       await loadData();
     } catch (err) { setError(err instanceof Error ? err.message : "عملیات مرخصی ناموفق بود"); }
+  }
+
+  async function confirmRejectLeave() {
+    if (!myId || !rejectLeaveId) return;
+    if (!rejectReason.trim()) { setError("برای رد درخواست، دلیل الزامی است."); return; }
+    try {
+      await leaveApi.reject(token, rejectLeaveId, myId, rejectReason.trim());
+      setRejectLeaveId(null); setRejectReason("");
+      setMessage("مرخصی رد شد.");
+      await loadData();
+    } catch (err) { setError(err instanceof Error ? err.message : "رد مرخصی ناموفق بود"); }
   }
 
   async function updateUserRole(userId: string, role: string) {
@@ -2214,9 +2227,9 @@ export default function Home() {
                             <option value="monthly">ماهانه</option>
                           </select>
                         </label>
-                        <Select label="مسئول *" value={ftAssignee} onChange={setFtAssignee}
-                          options={users.filter((u) => u.roles === "specialist" || u.roles === "supervisor").map((u) => [getId(u), userName(u)])}
-                          placeholder="انتخاب مسئول"
+                        <Select label="مسئول * (هم‌حوزه)" value={ftAssignee} onChange={setFtAssignee}
+                          options={users.filter((u) => (u.roles === "specialist" || u.roles === "supervisor") && (!currentUser?.workField || u.workField === currentUser.workField)).map((u) => [getId(u), userName(u)])}
+                          placeholder="انتخاب مسئول هم‌حوزه"
                         />
                         <Select label="پروژه" value={ftProjectId} onChange={setFtProjectId}
                           options={projects.map((p) => [getId(p), p.title])}
@@ -2405,7 +2418,11 @@ export default function Home() {
                 <Field label="نام" name="settingsFirstName" value={settingsFirstName} onChange={setSettingsFirstName} />
                 <Field label="نام خانوادگی" name="settingsLastName" value={settingsLastName} onChange={setSettingsLastName} />
                 <Field label="ایمیل" name="settingsEmail" type="email" value={settingsEmail} onChange={setSettingsEmail} />
-                <button className="h-10 w-fit rounded-lg bg-[#1f7a8c] px-5 text-sm font-semibold text-white" type="submit">ذخیره تغییرات</button>
+                {isManager ? (
+                  <button className="h-10 w-fit rounded-lg bg-[#1f7a8c] px-5 text-sm font-semibold text-white" type="submit">ذخیره تغییرات</button>
+                ) : (
+                  <p className="rounded-lg bg-[--surface-2] px-3 py-2.5 text-xs text-[--text-3]">ویرایش پروفایل فقط توسط مدیر امکان‌پذیر است.</p>
+                )}
               </form>
             </section>
           )}
@@ -2683,6 +2700,29 @@ export default function Home() {
         </main>
       </div>
 
+      {/* Reject leave — reason modal */}
+      {rejectLeaveId && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => setRejectLeaveId(null)}>
+          <div className="w-full max-w-sm rounded-2xl border border-[--border] bg-[--surface] p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2">
+              <X size={18} className="text-red-500" />
+              <h3 className="text-base font-bold text-[--text]">رد درخواست مرخصی</h3>
+            </div>
+            <p className="mt-1 text-xs text-[--text-3]">دلیل رد را وارد کنید (الزامی).</p>
+            <textarea
+              autoFocus
+              className="mt-3 h-24 w-full resize-none rounded-lg border border-[--border] bg-[--surface] px-3 py-2 text-sm text-[--text] outline-none transition focus:border-[#1f7a8c] focus:ring-2 focus:ring-[#1f7a8c]/15"
+              value={rejectReason} onChange={(e) => setRejectReason(e.target.value)}
+              placeholder="مثلاً: ظرفیت مرخصی تکمیل است"
+            />
+            <div className="mt-4 flex gap-2">
+              <button className="h-10 flex-1 rounded-lg bg-red-600 text-sm font-semibold text-white transition hover:bg-red-700 disabled:opacity-50" disabled={!rejectReason.trim()} onClick={() => void confirmRejectLeave()} type="button">رد درخواست</button>
+              <button className="h-10 rounded-lg border border-[--border] bg-[--surface-2] px-4 text-sm font-semibold" onClick={() => setRejectLeaveId(null)} type="button">انصراف</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Center popup for a fresh notification */}
       {popupNotif && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => setPopupNotif(null)}>
@@ -2842,7 +2882,7 @@ function TaskPanel({
           <div>
             <div className="mb-2 flex items-center justify-between">
               <p className="text-xs font-semibold text-[--text-3]">توضیحات</p>
-              {!descEditing && (
+              {canEditAssignments && !descEditing && (
                 <button className="text-xs font-semibold text-[#1f7a8c] hover:underline" onClick={() => setDescEditing(true)} type="button">
                   {desc ? "ویرایش" : "افزودن"}
                 </button>
@@ -2872,12 +2912,14 @@ function TaskPanel({
               </div>
             ) : desc ? (
               <p className="rounded-xl bg-[--surface-2] px-3 py-2.5 text-sm text-[--text] leading-relaxed">{desc}</p>
-            ) : (
+            ) : canEditAssignments ? (
               <button
                 className="w-full rounded-xl border border-dashed border-[--border] p-3 text-center text-xs text-[--text-3] transition hover:border-[#1f7a8c]/40 hover:text-[#1f7a8c]"
                 onClick={() => setDescEditing(true)}
                 type="button"
               >+ افزودن توضیحات</button>
+            ) : (
+              <p className="rounded-xl bg-[--surface-2] px-3 py-2.5 text-sm text-[--text-3]">بدون توضیحات</p>
             )}
           </div>
 
@@ -2888,8 +2930,9 @@ function TaskPanel({
               {COLUMNS.map((col) => (
                 <button
                   key={col.status}
-                  className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all ${task.status === col.status ? `${col.badge} border-transparent` : "border-[--border] text-[--text-2] hover:bg-[--surface-2]"}`}
-                  onClick={() => onStatusChange(col.status)}
+                  disabled={!canEditAssignments}
+                  className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all ${task.status === col.status ? `${col.badge} border-transparent` : "border-[--border] text-[--text-2] hover:bg-[--surface-2]"} ${!canEditAssignments ? "cursor-default opacity-60" : ""}`}
+                  onClick={() => canEditAssignments && onStatusChange(col.status)}
                   type="button"
                 >
                   <span className={`h-2 w-2 rounded-full ${col.dot}`} />
@@ -3024,29 +3067,37 @@ function TaskPanel({
           </div>
         </div>
 
-        {/* Panel footer */}
-        <div className="border-t border-[--border] p-4 space-y-2">
-          {task.status !== "done" ? (
+        {/* Panel footer — manager actions only */}
+        {canEditAssignments ? (
+          <div className="border-t border-[--border] p-4 space-y-2">
+            {task.status !== "done" ? (
+              <button
+                className="flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-[#1f7a8c] text-sm font-semibold text-white transition hover:bg-[#196b7b] active:scale-[0.98]"
+                onClick={() => { onStatusChange(nextStatus(task.status)); onClose(); }}
+                type="button"
+              >
+                {task.status === "todo" ? "شروع کار" : "تکمیل کردن"}
+                <ChevronLeft size={15} />
+              </button>
+            ) : (
+              <div className="flex items-center justify-center gap-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 py-2.5 text-sm font-semibold text-emerald-600 dark:text-emerald-400">
+                <CheckCircle2 size={16} />تکمیل شده
+              </div>
+            )}
             <button
-              className="flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-[#1f7a8c] text-sm font-semibold text-white transition hover:bg-[#196b7b] active:scale-[0.98]"
-              onClick={() => { onStatusChange(nextStatus(task.status)); onClose(); }}
-              type="button"
+              className="flex h-9 w-full items-center justify-center rounded-xl border border-red-200 text-sm font-semibold text-red-600 transition hover:bg-red-50 dark:border-red-900 dark:hover:bg-red-950/40"
+              onClick={onDelete} type="button"
             >
-              {task.status === "todo" ? "شروع کار" : "تکمیل کردن"}
-              <ChevronLeft size={15} />
+              حذف گزارش
             </button>
-          ) : (
+          </div>
+        ) : task.status === "done" ? (
+          <div className="border-t border-[--border] p-4">
             <div className="flex items-center justify-center gap-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 py-2.5 text-sm font-semibold text-emerald-600 dark:text-emerald-400">
               <CheckCircle2 size={16} />تکمیل شده
             </div>
-          )}
-          <button
-            className="flex h-9 w-full items-center justify-center rounded-xl border border-red-200 text-sm font-semibold text-red-600 transition hover:bg-red-50 dark:border-red-900 dark:hover:bg-red-950/40"
-            onClick={onDelete} type="button"
-          >
-            حذف گزارش
-          </button>
-        </div>
+          </div>
+        ) : null}
       </div>
     </>
   );
