@@ -315,6 +315,7 @@ export default function Home() {
   const [popupNotif, setPopupNotif] = useState<Notification | null>(null);
   const [rejectLeaveId, setRejectLeaveId] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+  const [boardShowAll, setBoardShowAll] = useState(false);
   const seenNotifRef = useRef<Set<string>>(new Set());
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
   const [excelFiles, setExcelFiles] = useState<ExcelFile[]>([]);
@@ -497,8 +498,8 @@ export default function Home() {
       if (role === "manager") void loadManagerAnalytics(authToken);
       else if (role === "supervisor") {
         // GET /fixed-tasks is allowed for manager/supervisor only (specialist → 403).
-        fixedTaskApi.list(authToken, uid ? { assignedTo: uid, limit: 50 } : { limit: 50 })
-          .then((r) => setFixedTasks(normalizeList(r)))
+        fetchAllFixedTasks(authToken, uid ? { assignedTo: uid } : {})
+          .then((r) => setFixedTasks(r))
           .catch(() => {});
       } else {
         setFixedTasks([]);
@@ -511,6 +512,22 @@ export default function Home() {
     }
   }
 
+  // Fetch all fixed tasks across pages (the API caps page size, so loop until we have them all).
+  async function fetchAllFixedTasks(authToken: string, base: Record<string, string | number | boolean | undefined> = {}) {
+    const all: FixedTask[] = [];
+    const limit = 100;
+    for (let page = 1; page <= 50; page++) {
+      const res = await fixedTaskApi.list(authToken, { ...base, page, limit }).catch(() => null);
+      if (!res) break;
+      const list = normalizeList(res as FixedTask[] | { data?: FixedTask[] });
+      all.push(...list);
+      const total = (res && typeof res === "object" && "total" in (res as Record<string, unknown>))
+        ? Number((res as Record<string, unknown>).total) : all.length;
+      if (list.length === 0 || all.length >= total) break;
+    }
+    return all;
+  }
+
   async function loadManagerAnalytics(authToken = token) {
     if (!authToken) return;
     try {
@@ -518,14 +535,14 @@ export default function Home() {
         managerApi.taskStatusOverview(authToken).catch(() => null),
         managerApi.taskCountsByUsers(authToken).catch(() => []),
         managerApi.monthlyPerformance(authToken).catch(() => []),
-        fixedTaskApi.list(authToken, { limit: 50 }).catch(() => []),
+        fetchAllFixedTasks(authToken).catch(() => [] as FixedTask[]),
         managerApi.usersProgress(authToken).catch(() => []),
       ]);
       setManagerTaskStatus(taskStatus);
       setManagerUserCounts(normalizeList(userCounts as UserTaskCount[] | { data?: UserTaskCount[] }));
       const monthlyRaw = monthlyPerf as any;
       setManagerMonthlyPerf(monthlyRaw?.users ? monthlyRaw.users : normalizeList(monthlyRaw as MonthlyPerformance[] | { data?: MonthlyPerformance[] }));
-      setFixedTasks(normalizeList(recurring as FixedTask[] | { data?: FixedTask[] }));
+      setFixedTasks(recurring as FixedTask[]);
       setManagerUserProgress(normalizeList(progress as UserProgress[] | { data?: UserProgress[] }));
     } catch {}
   }
@@ -733,17 +750,6 @@ export default function Home() {
     } catch (err) { setError(err instanceof Error ? err.message : "تأیید کاربر ناموفق بود"); }
   }
 
-  async function increaseUserScore(userId: string) {
-    const raw = window.prompt("امتیازی که می‌خواهید اضافه شود:", "10");
-    if (raw === null) return;
-    const score = Number(raw);
-    if (!Number.isFinite(score) || score === 0) { setError("امتیاز نامعتبر است"); return; }
-    try {
-      await userApi.increaseScore(token, { userId, score });
-      setMessage("امتیاز کاربر افزایش یافت.");
-      await loadData();
-    } catch (err) { setError(err instanceof Error ? err.message : "افزایش امتیاز ناموفق بود"); }
-  }
 
   async function deleteUser(userId: string) {
     if (!window.confirm("حذف این کاربر؟ این عمل قابل بازگشت نیست.")) return;
@@ -2101,7 +2107,6 @@ export default function Home() {
                           {u.isActive === false && (
                             <button className="rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-600 transition hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-400" onClick={() => void approveUser(getId(u))} type="button">تأیید</button>
                           )}
-                          <button className="rounded-lg bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-600 transition hover:bg-amber-100 dark:bg-amber-950/40 dark:text-amber-400" onClick={() => void increaseUserScore(getId(u))} type="button">+ امتیاز</button>
                           <select
                             className="h-8 rounded-lg border border-[--border] bg-[--surface] px-2 text-xs"
                             value={u.roles ?? "specialist"}
@@ -2574,7 +2579,8 @@ export default function Home() {
 
             <div className="grid gap-4 bg-[--surface-2]/40 p-4 lg:grid-cols-3">
               {COLUMNS.map((col) => {
-                const items = col.status === "todo" ? filteredFixedTemplates : [];
+                const allItems = col.status === "todo" ? filteredFixedTemplates : [];
+                const items = boardShowAll ? allItems : allItems.slice(0, 8);
                 return (
                   <div key={col.status} className={`flex flex-col rounded-2xl border ${col.border} ${col.colBg}`}>
                     <div className={`flex items-center justify-between rounded-t-2xl bg-gradient-to-l ${col.headerGrad} px-4 py-3`}>
@@ -2582,7 +2588,7 @@ export default function Home() {
                         <span className={`h-2.5 w-2.5 rounded-full ${col.dot}`} />
                         <h3 className={`text-sm font-bold ${col.headerText}`}>{col.title}</h3>
                       </div>
-                      <span className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${col.badge}`}>{items.length}</span>
+                      <span className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${col.badge}`}>{allItems.length}</span>
                     </div>
                     <div className="flex flex-col gap-2.5 p-2.5 min-h-[120px]">
                       {items.length === 0 ? (
@@ -2615,6 +2621,14 @@ export default function Home() {
                           </div>
                         </article>
                       ))}
+                      {allItems.length > 8 && (
+                        <button
+                          className="mt-1 w-full rounded-lg border border-[--border] bg-[--surface-2] py-2 text-xs font-semibold text-[#1f7a8c] transition hover:bg-[--surface]"
+                          onClick={() => setBoardShowAll((v) => !v)} type="button"
+                        >
+                          {boardShowAll ? "نمایش کمتر" : `نمایش بیشتر (${allItems.length - 8} مورد دیگر)`}
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
