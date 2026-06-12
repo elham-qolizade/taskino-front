@@ -11,6 +11,8 @@ export type User = {
   workField?: WorkField;
   isActive?: boolean;
   score?: number;
+  performanceStatus?: string;
+  progressPercentage?: number;
 };
 
 export type WorkField = "it" | "human_resources" | "finance" | "sales" | "operations";
@@ -28,6 +30,9 @@ export type Task = {
   status?: string;
   taskComment?: string;
   isPublic?: boolean;
+  file?: string;
+  excelFile?: string | { _id?: string; id?: string; fileName?: string; originalName?: string };
+  recurrence?: string;
   startDate?: string;
   dueDate?: string;
   createdAt?: string;
@@ -208,6 +213,33 @@ export type MonthlyPerformanceResponse = {
 
 export type AuthResponse = { user: User; accessToken: string };
 
+export type ManagerAllTasks = {
+  recurrence?: string | null;
+  total?: number;
+  totalTasks?: number;
+  totalFixedTasks?: number;
+  tasks?: Task[];
+  fixedTasks?: FixedTask[];
+};
+
+export type UserProgress = {
+  userId?: string;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  role?: string;
+  totalTasks?: number;
+  completedTasks?: number;
+  onTimeTasks?: number;
+  inProgressTasks?: number;
+  totalFixedTasks?: number;
+  completedFixedTasks?: number;
+  inProgressFixedTasks?: number;
+  progressPercentage?: number;
+  performanceStatus?: string;
+  performanceEvaluatedAt?: string;
+};
+
 export type ProjectMember = {
   _id?: string;
   id?: string;
@@ -371,6 +403,16 @@ export const taskApi = {
   get: (token: string, id: string) => request<Task>(`/tasks/${id}`, {}, token),
   create: (token: string, body: Record<string, unknown>) =>
     request<Task>("/tasks", { method: "POST", body: JSON.stringify(body) }, token),
+  createWithFile: (token: string, body: Record<string, unknown>, file: File) => {
+    const form = new FormData();
+    Object.entries(body).forEach(([k, v]) => {
+      if (v === undefined || v === null) return;
+      if (Array.isArray(v)) v.forEach((item) => form.append(k, String(item)));
+      else form.append(k, String(v));
+    });
+    form.append("file", file);
+    return request<Task>("/tasks", { method: "POST", body: form }, token);
+  },
   update: (token: string, id: string, body: Record<string, unknown>) =>
     request<Task>(`/tasks/${id}`, { method: "PATCH", body: JSON.stringify(body) }, token),
   delete: (token: string, id: string) =>
@@ -378,30 +420,11 @@ export const taskApi = {
   updateStatus: (token: string, id: string, status: string) =>
     request(`/tasks/${id}/status`, { method: "PATCH", body: JSON.stringify({ status }) }, token),
   completionStats: (token: string, body: Record<string, unknown>) =>
-    request("/tasks/completion-stats", { method: "POST", body: JSON.stringify(body) }, token),
+    request<Record<string, unknown>>("/tasks/completion-stats", { method: "POST", body: JSON.stringify(body) }, token),
   dateCount: (token: string, body: Record<string, unknown>) =>
-    request("/tasks/date-count", { method: "POST", body: JSON.stringify(body) }, token),
-};
-
-// ─── Projects ────────────────────────────────────────────────────────────────
-export const projectApi = {
-  list: (token: string, params?: Record<string, string | number | undefined>) =>
-    request<Project[] | { data?: Project[] }>(`/projects${qs(params)}`, {}, token),
-  get: (token: string, id: string) => request<Project>(`/projects/${id}`, {}, token),
-  byOwner: (token: string, ownerId: string) =>
-    request<Project[]>(`/projects/owner/${ownerId}`, {}, token),
-  create: (token: string, body: Record<string, unknown>) =>
-    request<Project>("/projects", { method: "POST", body: JSON.stringify(body) }, token),
-  update: (token: string, id: string, body: Record<string, unknown>) =>
-    request<Project>(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) }, token),
-  delete: (token: string, id: string) =>
-    request(`/projects/${id}`, { method: "DELETE" }, token),
-  addTask: (token: string, projectId: string, taskId: string) =>
-    request(`/projects/${projectId}/tasks/${taskId}`, { method: "PATCH" }, token),
-  removeTask: (token: string, projectId: string, taskId: string) =>
-    request(`/projects/${projectId}/tasks/${taskId}`, { method: "DELETE" }, token),
-  progress: (token: string, id: string) =>
-    request<ProjectProgress>(`/projects/${id}/progress`, {}, token),
+    request<Record<string, unknown>>("/tasks/date-count", { method: "POST", body: JSON.stringify(body) }, token),
+  byUserName: (token: string, userName: string, lastName: string) =>
+    request<Task[] | { data?: Task[] }>(`/tasks/user${qs({ userName, lastName })}`, {}, token),
 };
 
 // ─── Manager ─────────────────────────────────────────────────────────────────
@@ -411,20 +434,18 @@ export const managerApi = {
     request<User[] | { data?: User[] }>(`/manager/users${qs(params)}`, {}, token),
   updateUserRole: (token: string, userId: string, role: string) =>
     request(`/manager/users/${userId}/role`, { method: "PATCH", body: JSON.stringify({ role }) }, token),
-  setProjectActivation: (token: string, projectId: string, isActive: boolean) =>
-    request(`/manager/projects/${projectId}/activation`, { method: "PATCH", body: JSON.stringify({ isActive }) }, token),
-  projectAssignee: (token: string, projectId: string) =>
-    request<User | null>(`/manager/projects/${projectId}/assignee`, {}, token),
-  projectProgress: (token: string, projectId: string) =>
-    request<ProjectProgress>(`/manager/projects/${projectId}/progress`, {}, token),
-  projectsProgress: (token: string, params?: Record<string, string | number | undefined>) =>
-    request<ProjectProgressItem[] | { data?: ProjectProgressItem[] }>(`/manager/projects/progress${qs(params)}`, {}, token),
   taskStatusOverview: (token: string, projectId?: string) =>
     request<TaskStatusOverview>(`/manager/tasks/status${qs(projectId ? { projectId } : {})}`, {}, token),
   taskCountsByUsers: (token: string, projectId?: string) =>
     request<UserTaskCount[] | { data?: UserTaskCount[] }>(`/manager/tasks/users/counts${qs(projectId ? { projectId } : {})}`, {}, token),
   monthlyPerformance: (token: string, params?: Record<string, string | number | undefined>) =>
     request<MonthlyPerformance[] | { data?: MonthlyPerformance[] } | MonthlyPerformanceResponse>(`/manager/users/monthly-performance${qs(params)}`, {}, token),
+  allTasks: (token: string, recurrence?: string) =>
+    request<ManagerAllTasks>(`/manager/tasks${qs(recurrence ? { recurrence } : {})}`, {}, token),
+  findUserByName: (token: string, firstName: string, lastName: string) =>
+    request<User>(`/manager/users/by-name${qs({ firstName, lastName })}`, {}, token),
+  usersProgress: (token: string) =>
+    request<UserProgress[] | { data?: UserProgress[] }>("/manager/users/progress", {}, token),
 };
 
 // ─── Supervisor ───────────────────────────────────────────────────────────────
@@ -479,6 +500,8 @@ export const fixedTaskApi = {
     request(`/fixed-tasks/${id}`, { method: "DELETE" }, token),
   incompleteReport: (token: string, params?: Record<string, string | number | boolean | undefined>) =>
     request<IncompleteFixedTask[] | { data?: IncompleteFixedTask[] }>(`/fixed-tasks/reports/incomplete${qs(params)}`, {}, token),
+  seedFromExcel: (token: string) =>
+    request<{ message?: string; usersCreated?: number; fixedTasksCreated?: number }>("/fixed-tasks/seed/excel", { method: "POST" }, token),
 };
 
 // ─── Leave Requests ──────────────────────────────────────────────────────────

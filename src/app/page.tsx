@@ -9,6 +9,9 @@ import {
   BarChart2,
   Bell,
   CalendarDays,
+  Clock,
+  Play,
+  Pause,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -17,6 +20,7 @@ import {
   Download,
   FileSpreadsheet,
   Flag,
+  MessageSquare,
   FolderKanban,
   GripVertical,
   LayoutDashboard,
@@ -52,7 +56,6 @@ import {
   managerApi,
   normalizeList,
   notificationApi,
-  projectApi,
   supervisorApi,
   taskApi,
   type FixedTask,
@@ -62,6 +65,8 @@ import {
   type ExcelStatistics,
   type LeaveRequest,
   type ManagerStats,
+  type ManagerAllTasks,
+  type UserProgress,
   type MemberPerformance,
   type MonthlyPerformance,
   type Notification,
@@ -80,7 +85,7 @@ import {
 // ─── Types ────────────────────────────────────────────────────────────────────
 type Priority = "urgent" | "high" | "normal" | "low";
 type TaskPeriod = "daily" | "weekly" | "monthly";
-type View = "dashboard" | "projects" | "tasks" | "team" | "excel" | "settings" | "analytics" | "fixed-reports" | "supervisor-projects" | "supervisor-team";
+type View = "dashboard" | "tasks" | "tasks-admin" | "team" | "leave" | "excel" | "settings" | "analytics" | "fixed-reports" | "supervisor-projects" | "supervisor-team";
 
 const TASK_PERIODS: Array<[TaskPeriod, string]> = [
   ["daily", "روزانه"],
@@ -225,6 +230,43 @@ function isUnassignedTask(task: Task) {
   return (task.assignedTo ?? []).length === 0;
 }
 
+function fixedTaskDate(item: IncompleteFixedTask) {
+  const rawDate = item.deadline || item.periodEnd || item.nextRunAt || item.createdAt;
+  if (!rawDate) return null;
+  const date = new Date(rawDate);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function isFixedTaskInPeriod(item: IncompleteFixedTask, period: TaskPeriod) {
+  const date = fixedTaskDate(item);
+  if (!date) return false;
+
+  const now = new Date();
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+
+  if (period === "weekly") {
+    const day = start.getDay();
+    const daysFromSaturday = (day + 1) % 7;
+    start.setDate(start.getDate() - daysFromSaturday);
+  }
+
+  if (period === "monthly") {
+    start.setDate(1);
+  }
+
+  const end = new Date(start);
+  if (period === "daily") end.setDate(start.getDate() + 1);
+  if (period === "weekly") end.setDate(start.getDate() + 7);
+  if (period === "monthly") end.setMonth(start.getMonth() + 1);
+
+  return date >= start && date < end;
+}
+
+function recurrenceLabel(value?: FixedTask["recurrence"]) {
+  return TASK_PERIODS.find(([period]) => period === value)?.[1] ?? "ثابت";
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function Home() {
   const [token, setToken] = useState("");
@@ -240,25 +282,42 @@ export default function Home() {
   const [taskTitle, setTaskTitle] = useState("");
   const [taskAssignee, setTaskAssignee] = useState("");
   const [taskProjectId, setTaskProjectId] = useState("");
+  const [taskRecurrence, setTaskRecurrence] = useState("");
+  const [taskFile, setTaskFile] = useState<File | null>(null);
+  const [showNewProjectForm, setShowNewProjectForm] = useState(false);
+  // Tasks-admin view
+  const [taLookupFirst, setTaLookupFirst] = useState("");
+  const [taLookupLast, setTaLookupLast] = useState("");
+  const [taLookupResult, setTaLookupResult] = useState<Task[] | null>(null);
+  const [taCompletionExpert, setTaCompletionExpert] = useState("");
+  const [taCompletionResult, setTaCompletionResult] = useState<Record<string, unknown> | null>(null);
+  const [taCountUser, setTaCountUser] = useState("");
+  const [taCountStart, setTaCountStart] = useState("");
+  const [taCountEnd, setTaCountEnd] = useState("");
+  const [taCountResult, setTaCountResult] = useState<Record<string, unknown> | null>(null);
   const [taskQuery, setTaskQuery] = useState("");
-  const [projectTitle, setProjectTitle] = useState("");
-  const [projectDescription, setProjectDescription] = useState("");
-  const [projectSupervisorId, setProjectSupervisorId] = useState("");
-  const [projectAssigneeId, setProjectAssigneeId] = useState("");
-  const [projectWorkField, setProjectWorkField] = useState<WorkField>("operations");
-  const [showProjectForm, setShowProjectForm] = useState(false);
+  const [showNewUserForm, setShowNewUserForm] = useState(false);
+  const [newUserFirstName, setNewUserFirstName] = useState("");
+  const [newUserLastName, setNewUserLastName] = useState("");
+  const [newUserMobile, setNewUserMobile] = useState("");
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
+  const [newUserRole, setNewUserRole] = useState("specialist");
+  const [newUserWorkField, setNewUserWorkField] = useState<WorkField>("operations");
+  const [teamQuery, setTeamQuery] = useState("");
+  const [teamSearchResult, setTeamSearchResult] = useState<User[] | null>(null);
+  const [teamSearching, setTeamSearching] = useState(false);
 
   // API data
   const [managerStats, setManagerStats] = useState<ManagerStats | null>(null);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [popupNotif, setPopupNotif] = useState<Notification | null>(null);
+  const seenNotifRef = useRef<Set<string>>(new Set());
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
-  const [projectProgress, setProjectProgress] = useState<Record<string, ProjectProgress>>({});
   const [excelFiles, setExcelFiles] = useState<ExcelFile[]>([]);
   const [excelStats, setExcelStats] = useState<ExcelStatistics | null>(null);
   const [excelUploading, setExcelUploading] = useState(false);
-  const [membersProject, setMembersProject] = useState<Project | null>(null);
-  const [projectMembers, setProjectMembers] = useState<Array<{ user?: string | User; role?: string; id?: string }>>([]);
   const [fixedTasks, setFixedTasks] = useState<FixedTask[]>([]);
   const [incompleteFixedTasks, setIncompleteFixedTasks] = useState<IncompleteFixedTask[]>([]);
   const [fixedReportsTab, setFixedReportsTab] = useState<"templates" | "incomplete">("templates");
@@ -274,7 +333,7 @@ export default function Home() {
   const [managerTaskStatus, setManagerTaskStatus] = useState<TaskStatusOverview | null>(null);
   const [managerUserCounts, setManagerUserCounts] = useState<UserTaskCount[]>([]);
   const [managerMonthlyPerf, setManagerMonthlyPerf] = useState<MonthlyPerformance[]>([]);
-  const [managerProjectsProgress, setManagerProjectsProgress] = useState<ProjectProgressItem[]>([]);
+  const [managerUserProgress, setManagerUserProgress] = useState<UserProgress[]>([]);
 
   // Supervisor state
   const [supervisorStats, setSupervisorStats] = useState<SupervisorStats | null>(null);
@@ -297,7 +356,6 @@ export default function Home() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [taskPriorities, setTaskPriorities] = useState<Record<string, Priority>>({});
   const [leaveStart, setLeaveStart] = useState("");
   const [leaveEnd, setLeaveEnd] = useState("");
@@ -362,6 +420,39 @@ export default function Home() {
     return list.filter((t) => `${t.title} ${(t.assignedTo ?? []).map(userName).join(" ")} ${statusLabel(t.status)}`.toLowerCase().includes(q));
   }, [taskPriorities, taskQuery, tasks, selectedAssigneeFilter, selectedPeriodFilter, selectedPriorityFilter, selectedProjectFilter, selectedStatusFilter]);
 
+  const filteredFixedReports = useMemo(() => {
+    if (!isManager) return [];
+    if (selectedStatusFilter && selectedStatusFilter !== "todo") return [];
+    if (selectedPriorityFilter) return [];
+
+    let list = incompleteFixedTasks;
+    if (selectedProjectFilter) {
+      list = list.filter((item) => getId(item.projectId) === selectedProjectFilter);
+    }
+    if (selectedAssigneeFilter) {
+      list = list.filter((item) => getId(item.assignedTo) === selectedAssigneeFilter);
+    }
+    if (selectedPeriodFilter) {
+      list = list.filter((item) => isFixedTaskInPeriod(item, selectedPeriodFilter));
+    }
+    const q = taskQuery.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter((item) => `${item.title} ${userName(item.assignedTo)} ${recurrenceLabel(item.recurrence)}`.toLowerCase().includes(q));
+  }, [incompleteFixedTasks, isManager, selectedAssigneeFilter, selectedPeriodFilter, selectedPriorityFilter, selectedProjectFilter, selectedStatusFilter, taskQuery]);
+
+  const filteredFixedTemplates = useMemo(() => {
+    let list = fixedTasks;
+    if (selectedAssigneeFilter) {
+      list = list.filter((item) => getId(item.assignedTo) === selectedAssigneeFilter);
+    }
+    if (selectedPeriodFilter) {
+      list = list.filter((item) => (item.recurrence ?? "daily") === selectedPeriodFilter);
+    }
+    const q = taskQuery.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter((item) => `${item.title} ${userName(item.assignedTo)} ${recurrenceLabel(item.recurrence)}`.toLowerCase().includes(q));
+  }, [fixedTasks, selectedAssigneeFilter, selectedPeriodFilter, taskQuery]);
+
   const hasTaskFilters = Boolean(taskQuery || selectedProjectFilter || selectedStatusFilter || selectedAssigneeFilter || selectedPriorityFilter || selectedPeriodFilter);
 
   useEffect(() => {
@@ -381,44 +472,33 @@ export default function Home() {
       const userIsManager = currentRole === "manager";
       const userIsSupervisor = currentRole === "supervisor";
       const reportParams = !userIsManager && !userIsSupervisor && uid ? { assignedTo: uid } : undefined;
-      const [u, t, p, leaves, statsRes, unreadRes, notifRes] = await Promise.all([
+      const [u, t, leaves, statsRes, unreadRes, notifRes] = await Promise.all([
         userIsManager ? managerApi.users(authToken, { limit: 100 }).catch(() => userApi.list(authToken).catch(() => [])) : userApi.list(authToken).catch(() => []),
-        taskApi.list(authToken, reportParams),
-        projectApi.list(authToken),
-        uid && !userIsManager
+        userIsManager
+          ? managerApi.allTasks(authToken).catch(() => ({ tasks: [] as Task[] }))
+          : taskApi.list(authToken, reportParams).catch(() => []),
+        uid && !userIsManager && !userIsSupervisor
           ? leaveApi.list(authToken, { limit: 50, user: uid })
           : leaveApi.list(authToken, { limit: 50 }),
         managerApi.statistics(authToken).catch(() => null),
         notificationApi.unreadCount(authToken).catch(() => ({ unreadCount: 0 })),
         notificationApi.list(authToken, { isRead: false, limit: 20 }).catch(() => []),
       ]);
-      const projectList = normalizeList(p);
-      const taskList = normalizeList(t);
+      const taskList = normalizeList((((t as ManagerAllTasks)?.tasks) ?? t) as Task[] | { data?: Task[] });
       setUsers(normalizeList(u));
       setTasks(taskList);
-      const priorities: Record<string, Priority> = {};
-      taskList.forEach((task) => {
-        const match = task.taskComment?.match(/^priority:(urgent|high|normal|low)$/);
-        if (match) priorities[getId(task)] = match[1] as Priority;
-      });
-      setTaskPriorities(priorities);
-      setProjects(projectList);
       setLeaveRequests(normalizeList(leaves));
       setManagerStats(statsRes);
       setUnreadCount(unreadRes.unreadCount);
       setNotifications(normalizeList(notifRes as Notification[] | { data?: Notification[] }));
-      if (projectList.length) {
-        const progresses = await Promise.all(
-          projectList.map((proj) =>
-            projectApi.progress(authToken, getId(proj)).catch(() => null),
-          ),
-        );
-        const map: Record<string, ProjectProgress> = {};
-        progresses.forEach((prog) => { if (prog) map[prog.projectId] = prog; });
-        setProjectProgress(map);
-      }
       const role = (currentUser ?? storedUser)?.roles;
       if (role === "manager") void loadManagerAnalytics(authToken);
+      else {
+        // Fixed tasks (recurring reports) for the board — scoped to the current user.
+        fixedTaskApi.list(authToken, uid ? { assignedTo: uid, limit: 50 } : { limit: 50 })
+          .then((r) => setFixedTasks(normalizeList(r)))
+          .catch(() => {});
+      }
       if (role === "supervisor") void loadSupervisorData(authToken);
     } catch (err) {
       setError(err instanceof Error ? err.message : "دریافت اطلاعات ناموفق بود");
@@ -430,37 +510,33 @@ export default function Home() {
   async function loadManagerAnalytics(authToken = token) {
     if (!authToken) return;
     try {
-      const [taskStatus, userCounts, monthlyPerf, projectsProgress, recurring, incomplete] = await Promise.all([
+      const [taskStatus, userCounts, monthlyPerf, recurring, incomplete, progress] = await Promise.all([
         managerApi.taskStatusOverview(authToken).catch(() => null),
         managerApi.taskCountsByUsers(authToken).catch(() => []),
         managerApi.monthlyPerformance(authToken).catch(() => []),
-        managerApi.projectsProgress(authToken, { limit: 50 }).catch(() => []),
         fixedTaskApi.list(authToken, { limit: 50 }).catch(() => []),
         fixedTaskApi.incompleteReport(authToken, { limit: 50 }).catch(() => []),
+        managerApi.usersProgress(authToken).catch(() => []),
       ]);
       setManagerTaskStatus(taskStatus);
       setManagerUserCounts(normalizeList(userCounts as UserTaskCount[] | { data?: UserTaskCount[] }));
       const monthlyRaw = monthlyPerf as any;
       setManagerMonthlyPerf(monthlyRaw?.users ? monthlyRaw.users : normalizeList(monthlyRaw as MonthlyPerformance[] | { data?: MonthlyPerformance[] }));
-      setManagerProjectsProgress(normalizeList(projectsProgress as ProjectProgressItem[] | { data?: ProjectProgressItem[] }));
       setFixedTasks(normalizeList(recurring as FixedTask[] | { data?: FixedTask[] }));
       setIncompleteFixedTasks(normalizeList(incomplete as IncompleteFixedTask[] | { data?: IncompleteFixedTask[] }));
+      setManagerUserProgress(normalizeList(progress as UserProgress[] | { data?: UserProgress[] }));
     } catch {}
   }
 
   async function loadSupervisorData(authToken = token) {
     if (!authToken) return;
     try {
-      const [stats, projects, overdue, team] = await Promise.all([
+      const [stats, progress] = await Promise.all([
         supervisorApi.statistics(authToken).catch(() => null),
-        supervisorApi.projects(authToken, { limit: 50 }).catch(() => []),
-        supervisorApi.overdueTasks(authToken, { limit: 20 }).catch(() => []),
-        supervisorApi.teamPerformance(authToken).catch(() => null),
+        managerApi.usersProgress(authToken).catch(() => []),
       ]);
       setSupervisorStats(stats);
-      setSupervisorProjects(normalizeList(projects as any[] | { data?: any[] }));
-      setOverdueTasks(normalizeList(overdue as Task[] | { data?: Task[] }));
-      setTeamPerformance(team);
+      setManagerUserProgress(normalizeList(progress as UserProgress[] | { data?: UserProgress[] }));
     } catch {}
   }
 
@@ -509,17 +585,18 @@ export default function Home() {
   async function createTask(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!myId || !taskTitle.trim()) return;
+    // Backend requires exactly one assignee; fall back to the current user.
+    const assignee = taskAssignee || myId;
+    const body = {
+      title: taskTitle.trim(),
+      assignedTo: [assignee],
+      status: "todo",
+      ...(taskRecurrence ? { recurrence: taskRecurrence } : {}),
+    };
     try {
-      const created = await taskApi.create(token, {
-        title: taskTitle.trim(),
-        assignedTo: taskAssignee ? [taskAssignee] : [],
-        projectId: taskProjectId || undefined,
-        status: "todo",
-      });
-      if (taskProjectId) {
-        await projectApi.addTask(token, taskProjectId, getId(created)).catch(() => null);
-      }
-      setTaskTitle(""); setTaskAssignee(""); setTaskProjectId("");
+      if (taskFile) await taskApi.createWithFile(token, body, taskFile);
+      else await taskApi.create(token, body);
+      setTaskTitle(""); setTaskAssignee(""); setTaskProjectId(""); setTaskRecurrence(""); setTaskFile(null); setShowNewProjectForm(false);
       setMessage("گزارش جدید ساخته شد."); await loadData();
     } catch (err) { setError(err instanceof Error ? err.message : "ساخت گزارش ناموفق بود"); }
   }
@@ -536,33 +613,9 @@ export default function Home() {
     }
   }
 
-  async function createProject(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (!myId || !projectTitle.trim() || !projectSupervisorId) return;
-    try {
-      await projectApi.create(token, {
-        title: projectTitle.trim(),
-        description: projectDescription.trim() || undefined,
-        owner: myId,
-        supervisorId: projectSupervisorId,
-        assigneeId: projectAssigneeId || undefined,
-        workField: projectWorkField,
-        status: "pending",
-      });
-      setProjectTitle(""); setProjectDescription(""); setProjectSupervisorId(""); setProjectAssigneeId(""); setShowProjectForm(false);
-      setMessage("پروژه جدید ساخته شد."); await loadData();
-    } catch (err) { setError(err instanceof Error ? err.message : "ساخت پروژه ناموفق بود"); }
-  }
-
   async function moveTask(taskId: string, newStatus: string) {
     try {
-      const task = tasks.find((t) => getId(t) === taskId);
-      const projectId = getId(task?.projectId);
-      if (isSupervisor && projectId) {
-        await supervisorApi.updateTaskStatus(token, projectId, taskId, newStatus);
-      } else {
-        await taskApi.updateStatus(token, taskId, newStatus);
-      }
+      await taskApi.updateStatus(token, taskId, newStatus);
       setTasks((prev) => prev.map((t) => getId(t) === taskId ? { ...t, status: newStatus } : t));
       if (selectedTask && getId(selectedTask) === taskId) setSelectedTask((prev) => prev ? { ...prev, status: newStatus } : prev);
     } catch (err) { setError(err instanceof Error ? err.message : "تغییر وضعیت ناموفق بود"); }
@@ -586,12 +639,31 @@ export default function Home() {
     } catch (err) { setError(err instanceof Error ? err.message : "حذف گزارش ناموفق بود"); }
   }
 
-  async function deleteProject(projectId: string) {
+  async function taLookupTasks(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!taLookupFirst.trim() || !taLookupLast.trim()) { setError("نام و نام خانوادگی را وارد کنید."); return; }
     try {
-      await projectApi.delete(token, projectId);
-      setMessage("پروژه حذف شد.");
-      await loadData();
-    } catch (err) { setError(err instanceof Error ? err.message : "حذف پروژه ناموفق بود"); }
+      const res = await taskApi.byUserName(token, taLookupFirst.trim(), taLookupLast.trim());
+      setTaLookupResult(normalizeList(res));
+    } catch (err) { setTaLookupResult([]); setError(err instanceof Error ? err.message : "جستجو ناموفق بود"); }
+  }
+
+  async function taRunCompletionStats(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!myId || !taCompletionExpert) return;
+    try {
+      const res = await taskApi.completionStats(token, { managerId: myId, expertId: taCompletionExpert });
+      setTaCompletionResult(res);
+    } catch (err) { setError(err instanceof Error ? err.message : "دریافت آمار ناموفق بود"); }
+  }
+
+  async function taRunDateCount(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!taCountUser || !taCountStart || !taCountEnd) return;
+    try {
+      const res = await taskApi.dateCount(token, { userId: taCountUser, startdate: taCountStart, enddate: taCountEnd });
+      setTaCountResult(res);
+    } catch (err) { setError(err instanceof Error ? err.message : "دریافت تعداد ناموفق بود"); }
   }
 
   async function markNotificationRead(id: string) {
@@ -640,6 +712,81 @@ export default function Home() {
     } catch (err) { setError(err instanceof Error ? err.message : "تغییر نقش ناموفق بود"); }
   }
 
+  async function approveUser(userId: string) {
+    try {
+      await userApi.approve(token, userId);
+      setMessage("کاربر تأیید شد.");
+      await loadData();
+    } catch (err) { setError(err instanceof Error ? err.message : "تأیید کاربر ناموفق بود"); }
+  }
+
+  async function increaseUserScore(userId: string) {
+    const raw = window.prompt("امتیازی که می‌خواهید اضافه شود:", "10");
+    if (raw === null) return;
+    const score = Number(raw);
+    if (!Number.isFinite(score) || score === 0) { setError("امتیاز نامعتبر است"); return; }
+    try {
+      await userApi.increaseScore(token, { userId, score });
+      setMessage("امتیاز کاربر افزایش یافت.");
+      await loadData();
+    } catch (err) { setError(err instanceof Error ? err.message : "افزایش امتیاز ناموفق بود"); }
+  }
+
+  async function deleteUser(userId: string) {
+    if (!window.confirm("حذف این کاربر؟ این عمل قابل بازگشت نیست.")) return;
+    try {
+      await userApi.delete(token, userId);
+      setMessage("کاربر حذف شد.");
+      await loadData();
+    } catch (err) { setError(err instanceof Error ? err.message : "حذف کاربر ناموفق بود"); }
+  }
+
+  async function searchTeamUser(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const parts = teamQuery.trim().split(/\s+/);
+    if (parts.length < 2) { setError("نام و نام خانوادگی را با فاصله وارد کنید."); return; }
+    const firstName = parts[0];
+    const lastName = parts.slice(1).join(" ");
+    setTeamSearching(true);
+    try {
+      const found = await managerApi.findUserByName(token, firstName, lastName);
+      setTeamSearchResult(found ? [found] : []);
+    } catch {
+      setTeamSearchResult([]);
+    } finally { setTeamSearching(false); }
+  }
+
+  function clearTeamSearch() {
+    setTeamQuery("");
+    setTeamSearchResult(null);
+  }
+
+  async function createUser(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!newUserFirstName.trim() || !newUserLastName.trim() || !newUserEmail.trim() || !newUserPassword.trim()) return;
+    try {
+      const created = await userApi.create(token, {
+        firstName: newUserFirstName,
+        lastName: newUserLastName,
+        email: newUserEmail,
+        password: newUserPassword,
+        workField: newUserWorkField,
+        ...(newUserMobile.trim() ? { mobile: newUserMobile } : {}),
+      });
+      // Role can't be set at creation; apply it afterwards if non-default.
+      if (newUserRole !== "specialist") {
+        const newId = getId(created);
+        if (newId) await managerApi.updateUserRole(token, newId, newUserRole).catch(() => {});
+      }
+      setMessage("کاربر جدید ساخته شد.");
+      setNewUserFirstName(""); setNewUserLastName(""); setNewUserMobile("");
+      setNewUserEmail(""); setNewUserPassword(""); setNewUserRole("specialist");
+      setNewUserWorkField("operations");
+      setShowNewUserForm(false);
+      await loadData();
+    } catch (err) { setError(err instanceof Error ? err.message : "ساخت کاربر ناموفق بود"); }
+  }
+
   async function saveProfile(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!myId) return;
@@ -683,15 +830,30 @@ export default function Home() {
     if (token && activeView === "excel") queueMicrotask(() => void loadExcelData());
   }, [token, activeView]);
 
-  async function loadProjectMembers(project: Project) {
-    const people = [
-      project.owner ? { id: "owner", user: project.owner, role: "manager" } : null,
-      project.supervisorId ? { id: "supervisor", user: project.supervisorId, role: "supervisor" } : null,
-      project.assigneeId ? { id: "assignee", user: project.assigneeId, role: "specialist" } : null,
-    ].filter(Boolean) as Array<{ user?: string | User; role?: string; id?: string }>;
-    setMembersProject(project);
-    setProjectMembers(people);
-  }
+  // Poll for new notifications and show a center popup for fresh ones (e.g. new assignment).
+  useEffect(() => {
+    if (!token) return;
+    const seen = seenNotifRef.current;
+    let seeded = false;
+    const poll = async () => {
+      const res = await notificationApi.list(token, { isRead: false, limit: 20 }).catch(() => null);
+      if (!res) return;
+      const list = normalizeList(res as Notification[] | { data?: Notification[] });
+      setNotifications(list);
+      setUnreadCount(list.length);
+      if (!seeded) { list.forEach((n) => seen.add(getId(n))); seeded = true; return; }
+      const fresh = list.filter((n) => !seen.has(getId(n)));
+      fresh.forEach((n) => seen.add(getId(n)));
+      if (fresh.length && !isManager) {
+        const assign = fresh.find((n) => (n.type ?? "").includes("assign")) ?? fresh[0];
+        setPopupNotif(assign);
+      }
+    };
+    void poll();
+    const id = window.setInterval(() => void poll(), 20000);
+    return () => window.clearInterval(id);
+  }, [token, isManager]);
+
 
   async function handleExcelUpload(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -798,6 +960,16 @@ export default function Home() {
     } catch (err) { setError(err instanceof Error ? err.message : "حذف الگو ناموفق بود"); }
   }
 
+  async function seedFixedTasksFromExcel() {
+    if (!window.confirm("ایمپورت کاربران و الگوهای ثابت از فایل اکسلِ پیکربندی‌شده؟")) return;
+    try {
+      const res = await fixedTaskApi.seedFromExcel(token);
+      setMessage(res?.message ?? "ایمپورت از اکسل با موفقیت انجام شد.");
+      await loadManagerAnalytics();
+      await loadData();
+    } catch (err) { setError(err instanceof Error ? err.message : "ایمپورت از اکسل ناموفق بود"); }
+  }
+
   async function exportTasksToExcel() {
     if (!tasks.length) return;
     try {
@@ -831,7 +1003,7 @@ export default function Home() {
   function logout() {
     setToken(""); setCurrentUser(null); setUsers([]); setTasks([]); setProjects([]);
     setNotifications([]); setUnreadCount(0); setLeaveRequests([]); setManagerStats(null);
-    setProjectProgress({}); setExcelFiles([]); setExcelStats(null); setMembersProject(null);
+    setExcelFiles([]); setExcelStats(null);
     setShowNotifications(false); setActiveView("dashboard");
     localStorage.removeItem("taskino-token"); localStorage.removeItem("taskino-user");
   }
@@ -1036,6 +1208,7 @@ export default function Home() {
                 <SideItem active={activeView === "dashboard"} icon={LayoutDashboard} label="داشبورد" collapsed={sidebarCollapsed} onClick={() => setActiveView("dashboard")} />
                 <SideItem active={activeView === "supervisor-projects"} icon={FolderKanban} label="پروژه‌های من" meta={supervisorProjects.length} collapsed={sidebarCollapsed} onClick={() => setActiveView("supervisor-projects")} />
                 <SideItem active={activeView === "supervisor-team"} icon={UsersRound} label="عملکرد تیم" collapsed={sidebarCollapsed} onClick={() => setActiveView("supervisor-team")} />
+                <SideItem active={activeView === "leave"} icon={CalendarDays} label="مرخصی" meta={leaveRequests.filter((lr) => lr.status === "pending").length || undefined} collapsed={sidebarCollapsed} onClick={() => setActiveView("leave")} />
                 <SideItem active={activeView === "tasks"} icon={ClipboardList} label="گزارش‌ها" meta={tasks.length || overdueTasks.length || undefined} collapsed={sidebarCollapsed} onClick={() => setActiveView("tasks")} />
                 <div className="my-1.5 border-t border-[--border]" />
                 <SideItem active={activeView === "settings"} icon={Settings} label="تنظیمات" collapsed={sidebarCollapsed} onClick={() => setActiveView("settings")} />
@@ -1043,22 +1216,20 @@ export default function Home() {
             ) : isManager ? (
               <>
                 <SideItem active={activeView === "dashboard"} icon={LayoutDashboard} label="داشبورد" collapsed={sidebarCollapsed} onClick={() => setActiveView("dashboard")} />
-                <SideItem active={activeView === "projects"} icon={FolderKanban} label="پروژه‌ها" meta={statsProjects} collapsed={sidebarCollapsed} onClick={() => setActiveView("projects")} />
                 <SideItem active={activeView === "tasks"} icon={ClipboardList} label="گزارش‌ها" meta={tasks.length} collapsed={sidebarCollapsed} onClick={() => setActiveView("tasks")} />
+                <SideItem active={activeView === "tasks-admin"} icon={ClipboardList} label="پروژه‌ها" collapsed={sidebarCollapsed} onClick={() => setActiveView("tasks-admin")} />
                 <SideItem active={activeView === "analytics"} icon={BarChart2} label="آنالیتیکس" collapsed={sidebarCollapsed} onClick={() => setActiveView("analytics")} />
-                <SideItem active={activeView === "fixed-reports"} icon={ClipboardList} label="گزارش‌های ثابت" meta={incompleteFixedTasks.length || fixedTasks.length || undefined} collapsed={sidebarCollapsed} onClick={() => setActiveView("fixed-reports")} />
                 <SideItem active={activeView === "team"} icon={UsersRound} label="تیم" meta={statsUsers} collapsed={sidebarCollapsed} onClick={() => setActiveView("team")} />
-                <SideItem active={activeView === "excel"} icon={FileSpreadsheet} label="اکسل" collapsed={sidebarCollapsed} onClick={() => setActiveView("excel")} />
+                <SideItem active={activeView === "leave"} icon={CalendarDays} label="مرخصی" meta={leaveRequests.filter((lr) => lr.status === "pending").length || undefined} collapsed={sidebarCollapsed} onClick={() => setActiveView("leave")} />
                 <div className="my-1.5 border-t border-[--border]" />
                 <SideItem active={activeView === "settings"} icon={Settings} label="تنظیمات" collapsed={sidebarCollapsed} onClick={() => setActiveView("settings")} />
               </>
             ) : (
               <>
                 <SideItem active={activeView === "dashboard"} icon={LayoutDashboard} label="داشبورد" collapsed={sidebarCollapsed} onClick={() => setActiveView("dashboard")} />
-                <SideItem active={activeView === "projects"} icon={FolderKanban} label="پروژه‌ها" meta={statsProjects} collapsed={sidebarCollapsed} onClick={() => setActiveView("projects")} />
                 <SideItem active={activeView === "tasks"} icon={ClipboardList} label="گزارش‌ها" meta={tasks.length} collapsed={sidebarCollapsed} onClick={() => setActiveView("tasks")} />
-                <SideItem active={activeView === "team"} icon={UsersRound} label="تیم" meta={statsUsers} collapsed={sidebarCollapsed} onClick={() => setActiveView("team")} />
-                <SideItem active={activeView === "excel"} icon={FileSpreadsheet} label="اکسل" meta={excelFiles.length} collapsed={sidebarCollapsed} onClick={() => setActiveView("excel")} />
+                <SideItem active={activeView === "tasks-admin"} icon={FolderKanban} label="پروژه‌ها" meta={tasks.filter((t) => t.excelFile).length || undefined} collapsed={sidebarCollapsed} onClick={() => setActiveView("tasks-admin")} />
+                <SideItem active={activeView === "leave"} icon={CalendarDays} label="مرخصی" meta={leaveRequests.length || undefined} collapsed={sidebarCollapsed} onClick={() => setActiveView("leave")} />
                 <div className="my-1.5 border-t border-[--border]" />
                 <SideItem active={activeView === "settings"} icon={Settings} label="تنظیمات" collapsed={sidebarCollapsed} onClick={() => setActiveView("settings")} />
               </>
@@ -1089,11 +1260,11 @@ export default function Home() {
                 <div className="mx-2 mt-2 rounded-xl border border-[--border] bg-[--surface-2] p-3">
                   <div className="mb-2.5 flex items-center gap-1.5">
                     <Zap size={13} className="text-[#1f7a8c]" />
-                    <span className="text-xs font-semibold text-[--text]">گزارش سریع</span>
+                    <span className="text-xs font-semibold text-[--text]">افزودن گزارش به تیم</span>
                   </div>
                   <form className="space-y-2" onSubmit={createTask}>
                     <Field label="" name="taskTitle" id="quick-task-title" value={taskTitle} onChange={setTaskTitle} required placeholder="عنوان گزارش…" />
-                    <Select label="" value={taskProjectId} onChange={setTaskProjectId} options={projects.map((p) => [getId(p), p.title])} placeholder="پروژه (اختیاری)" />
+                    <Select label="" value={taskRecurrence} onChange={setTaskRecurrence} options={TASK_PERIODS} placeholder="دوره گزارش (اختیاری)" />
                     <Select label="" value={taskAssignee} onChange={setTaskAssignee} options={users.map((u) => [getId(u), userName(u)])} placeholder="بدون مسئول" />
                     <button className="flex h-9 w-full items-center justify-center gap-1.5 rounded-lg bg-[#1f7a8c] text-xs font-semibold text-white transition hover:bg-[#196b7b] active:scale-[0.98] disabled:opacity-60" disabled={!taskTitle.trim()} type="submit">
                       <Plus size={14} /> افزودن گزارش
@@ -1102,24 +1273,26 @@ export default function Home() {
                 </div>
               )}
 
-              {/* Progress mini */}
-              <div className="mx-2 my-2 rounded-xl border border-[--border] bg-[--surface-2] p-3">
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="text-xs font-semibold text-[--text-2]">پیشرفت</span>
-                  <span className="text-sm font-bold text-[--text]">{progress}%</span>
+              {/* Progress mini — hidden for manager */}
+              {!isManager && (
+                <div className="mx-2 my-2 rounded-xl border border-[--border] bg-[--surface-2] p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-xs font-semibold text-[--text-2]">پیشرفت</span>
+                    <span className="text-sm font-bold text-[--text]">{progress}%</span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-[--border]">
+                    <div className="h-full rounded-full bg-gradient-to-l from-[#1f7a8c] to-[#2a9db2] transition-all duration-700" style={{ width: `${progress}%` }} />
+                  </div>
+                  <div className="mt-2.5 grid grid-cols-3 gap-1 text-center">
+                    {[{ l: "باز", v: todoCount, c: "text-[--text]" }, { l: "جاری", v: inProgressTasks, c: "text-[#1f7a8c]" }, { l: "تمام", v: doneTasks, c: "text-emerald-500" }].map((s) => (
+                      <div key={s.l} className="rounded-lg bg-[--surface] py-1.5">
+                        <p className={`text-base font-bold ${s.c}`}>{s.v}</p>
+                        <p className="text-[10px] text-[--text-3]">{s.l}</p>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div className="h-1.5 overflow-hidden rounded-full bg-[--border]">
-                  <div className="h-full rounded-full bg-gradient-to-l from-[#1f7a8c] to-[#2a9db2] transition-all duration-700" style={{ width: `${progress}%` }} />
-                </div>
-                <div className="mt-2.5 grid grid-cols-3 gap-1 text-center">
-                  {[{ l: "باز", v: todoCount, c: "text-[--text]" }, { l: "جاری", v: inProgressTasks, c: "text-[#1f7a8c]" }, { l: "تمام", v: doneTasks, c: "text-emerald-500" }].map((s) => (
-                    <div key={s.l} className="rounded-lg bg-[--surface] py-1.5">
-                      <p className={`text-base font-bold ${s.c}`}>{s.v}</p>
-                      <p className="text-[10px] text-[--text-3]">{s.l}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              )}
             </>
           )}
         </aside>
@@ -1376,54 +1549,58 @@ export default function Home() {
           {isSupervisor && activeView === "supervisor-team" && (
             <section className="space-y-4">
               <div className="overflow-hidden rounded-2xl border border-violet-200 dark:border-violet-900 bg-[--surface]">
-                <div className="flex items-center gap-3 border-b border-violet-100 dark:border-violet-900/50 bg-gradient-to-l from-violet-50 to-white dark:from-violet-950/30 dark:to-transparent px-5 py-4">
-                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-violet-600 text-white">
-                    <Award size={17} />
+                <div className="flex items-center justify-between gap-3 border-b border-violet-100 dark:border-violet-900/50 bg-gradient-to-l from-violet-50 to-white dark:from-violet-950/30 dark:to-transparent px-5 py-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-violet-600 text-white"><Award size={17} /></div>
+                    <div>
+                      <h2 className="font-bold">عملکرد تیم</h2>
+                      <p className="text-[11px] text-[--text-3]">{managerUserProgress.length} عضو · ارزیابی بر اساس Task و گزارش‌های ثابت</p>
+                    </div>
                   </div>
-                  <div>
-                    <h2 className="font-bold">عملکرد کل تیم</h2>
-                    <p className="text-[11px] text-[--text-3]">
-                      {teamAssigneeCount} عضو · {teamPerformance?.completionRate ?? 0}% نرخ تکمیل · {teamPerformance?.doneTasks ?? 0}/{teamPerformance?.totalTasks ?? 0} گزارش
-                    </p>
-                  </div>
+                  <button className="flex h-9 items-center gap-2 rounded-lg border border-[--border] bg-[--surface-2] px-4 text-sm font-semibold transition hover:bg-[--surface]" onClick={() => void loadSupervisorData()} type="button">
+                    <RefreshCw size={15} />ارزیابی مجدد
+                  </button>
                 </div>
 
-                {!teamAssignees.length ? (
+                {managerUserProgress.length === 0 ? (
                   <div className="flex flex-col items-center py-12 text-center">
                     <UsersRound size={32} className="text-[--text-3]" />
                     <p className="mt-3 font-semibold">داده‌ای یافت نشد</p>
                   </div>
                 ) : (
                   <div className="divide-y divide-[--border]">
-                    {teamAssignees
-                      .sort((a: any, b: any) => (b.completionRate ?? 0) - (a.completionRate ?? 0))
-                      .map((m: any, i: number) => {
-                        const total = m.totalTasks ?? 0;
-                        const done = m.doneTasks ?? m.completedTasks ?? 0;
-                        const rate = m.completionRate ?? (total ? Math.round((done / total) * 100) : 0);
+                    {managerUserProgress
+                      .slice()
+                      .sort((a, b) => (b.progressPercentage ?? 0) - (a.progressPercentage ?? 0))
+                      .map((m, i) => {
+                        const name = `${m.firstName ?? ""} ${m.lastName ?? ""}`.trim() || m.email || "نامشخص";
+                        const rate = m.progressPercentage ?? 0;
+                        const badge = m.performanceStatus === "good" ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400"
+                          : m.performanceStatus === "weak" ? "bg-red-50 text-red-600 dark:bg-red-950/40 dark:text-red-400"
+                          : "bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400";
+                        const badgeLabel = m.performanceStatus === "good" ? "خوب" : m.performanceStatus === "weak" ? "ضعیف" : "متوسط";
                         return (
-                          <div key={m.userId ?? m._id ?? i} className="flex items-center gap-4 px-5 py-4">
-                            <div className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${i === 0 ? "bg-amber-100 text-amber-600" : i === 1 ? "bg-slate-100 text-slate-600" : i === 2 ? "bg-orange-100 text-orange-600" : "bg-[--surface-2] text-[--text-3]"}`}>
-                              {i + 1}
-                            </div>
+                          <div key={m.userId ?? i} className="flex items-center gap-4 px-5 py-4">
                             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-400 to-violet-600 text-xs font-bold text-white">
-                              {(m.firstName?.[0] ?? m.fullName?.[0] ?? "؟").toUpperCase()}
+                              {name[0]?.toUpperCase() ?? "؟"}
                             </div>
                             <div className="min-w-0 flex-1">
-                              <p className="font-semibold">{(m.fullName ?? `${m.firstName ?? ""} ${m.lastName ?? ""}`.trim()) || "نامشخص"}</p>
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="truncate font-semibold">{name}</p>
+                                <span className={`shrink-0 rounded-md px-2 py-0.5 text-[10px] font-bold ${badge}`}>{badgeLabel}</span>
+                              </div>
                               <div className="mt-1 flex items-center gap-2">
                                 <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[--border]">
                                   <div className="h-full rounded-full bg-violet-500 transition-all duration-700" style={{ width: `${rate}%` }} />
                                 </div>
                                 <span className="shrink-0 text-xs font-semibold text-[--text-2]">{rate}%</span>
                               </div>
-                            </div>
-                            <div className="flex gap-4 shrink-0 text-center text-xs">
-                              <div><p className="font-bold">{total}</p><p className="text-[--text-3]">کل</p></div>
-                              <div><p className="font-bold text-emerald-600">{done}</p><p className="text-[--text-3]">تمام</p></div>
-                              <div><p className="font-bold text-[#1f7a8c]">{m.inProgressTasks ?? 0}</p><p className="text-[--text-3]">جاری</p></div>
-                              <div><p className="font-bold text-amber-600">{m.overdueTasks ?? 0}</p><p className="text-[--text-3]">معوق</p></div>
-                              <div><p className="font-bold">{m.score ?? 0}</p><p className="text-[--text-3]">امتیاز</p></div>
+                              <div className="mt-1 flex flex-wrap gap-3 text-[11px] text-[--text-3]">
+                                <span>کل: {m.totalTasks ?? 0}</span>
+                                <span className="text-emerald-600">تمام: {m.completedTasks ?? 0}</span>
+                                <span className="text-[#1f7a8c]">جاری: {m.inProgressTasks ?? 0}</span>
+                                <span>ثابت: {m.completedFixedTasks ?? 0}/{m.totalFixedTasks ?? 0}</span>
+                              </div>
                             </div>
                           </div>
                         );
@@ -1453,40 +1630,6 @@ export default function Home() {
               </div>
 
               {/* Projects progress */}
-              {managerProjectsProgress.length > 0 && (
-                <div className="overflow-hidden rounded-2xl border border-[--border] bg-[--surface]">
-                  <div className="flex items-center gap-3 border-b border-[--border] px-5 py-4">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[#1f7a8c] to-[#165e6d] text-white">
-                      <Target size={17} />
-                    </div>
-                    <h2 className="font-bold">پیشرفت پروژه‌ها</h2>
-                  </div>
-                  <div className="divide-y divide-[--border]">
-                    {managerProjectsProgress.map((proj) => {
-                      const rate = proj.progressPercentage ?? 0;
-                      return (
-                        <div key={proj.projectId ?? proj.title} className="flex items-center gap-4 px-5 py-3">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center justify-between">
-                              <p className="font-semibold">{proj.projectName ?? proj.title}</p>
-                              <span className="shrink-0 text-sm font-bold text-[#1f7a8c]">{rate}%</span>
-                            </div>
-                            <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-[--border]">
-                              <div className="h-full rounded-full bg-gradient-to-l from-[#1f7a8c] to-[#2a9db2] transition-all duration-700" style={{ width: `${rate}%` }} />
-                            </div>
-                            <div className="mt-1 flex gap-3 text-[11px] text-[--text-3]">
-                              <span>کل: {proj.totalTasks ?? 0}</span>
-                              <span className="text-emerald-600">تمام: {proj.completedTasks ?? 0}</span>
-                              <span className="text-[#1f7a8c]">جاری: {proj.inProgressTasks ?? 0}</span>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
               {/* User task counts */}
               {managerUserCounts.length > 0 && (
                 <div className="overflow-hidden rounded-2xl border border-[--border] bg-[--surface]">
@@ -1561,42 +1704,216 @@ export default function Home() {
                   </div>
                 </div>
               )}
+
+              {/* User progress evaluation */}
+              {managerUserProgress.length > 0 && (
+                <div className="overflow-hidden rounded-2xl border border-[--border] bg-[--surface]">
+                  <div className="flex items-center gap-3 border-b border-[--border] px-5 py-4">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[#1f7a8c] to-[#165e6d] text-white">
+                      <Target size={17} />
+                    </div>
+                    <h2 className="font-bold">پیشرفت کاربران</h2>
+                  </div>
+                  <div className="divide-y divide-[--border]">
+                    {managerUserProgress
+                      .sort((a, b) => (b.progressPercentage ?? 0) - (a.progressPercentage ?? 0))
+                      .map((u, i) => {
+                        const name = `${u.firstName ?? ""} ${u.lastName ?? ""}`.trim() || u.email || "نامشخص";
+                        const rate = u.progressPercentage ?? 0;
+                        const badge = u.performanceStatus === "good"
+                          ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400"
+                          : u.performanceStatus === "weak"
+                          ? "bg-red-50 text-red-600 dark:bg-red-950/40 dark:text-red-400"
+                          : "bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400";
+                        const badgeLabel = u.performanceStatus === "good" ? "خوب" : u.performanceStatus === "weak" ? "ضعیف" : "متوسط";
+                        return (
+                          <div key={u.userId ?? i} className="flex items-center gap-4 px-5 py-3">
+                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#1f7a8c] to-[#165e6d] text-xs font-bold text-white">
+                              {name[0]?.toUpperCase() ?? "؟"}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="truncate font-semibold">{name}</p>
+                                <span className={`shrink-0 rounded-md px-2 py-0.5 text-[10px] font-bold ${badge}`}>{badgeLabel}</span>
+                              </div>
+                              <div className="mt-1.5 flex items-center gap-2">
+                                <div className="h-2 flex-1 overflow-hidden rounded-full bg-[--border]">
+                                  <div className="h-full rounded-full bg-gradient-to-l from-[#1f7a8c] to-[#2a9db2] transition-all duration-700" style={{ width: `${rate}%` }} />
+                                </div>
+                                <span className="shrink-0 text-xs font-bold text-[#1f7a8c]">{rate}%</span>
+                              </div>
+                              <div className="mt-1 flex flex-wrap gap-3 text-[11px] text-[--text-3]">
+                                <span>کل: {u.totalTasks ?? 0}</span>
+                                <span className="text-emerald-600">تمام: {u.completedTasks ?? 0}</span>
+                                <span className="text-[#1f7a8c]">جاری: {u.inProgressTasks ?? 0}</span>
+                                <span>ثابت: {u.completedFixedTasks ?? 0}/{u.totalFixedTasks ?? 0}</span>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
             </section>
           )}
 
-          {activeView === "team" && (
+          {!isManager && activeView === "tasks-admin" && (
             <section className="space-y-4">
-              <div className="rounded-2xl border border-[--border] bg-[--surface] p-5">
-                <h2 className="font-bold">اعضای تیم</h2>
-                <div className="mt-4 space-y-2">
-                  {users.map((u) => (
-                    <div key={getId(u)} className="flex items-center justify-between rounded-xl border border-[--border] bg-[--surface-2] px-4 py-3">
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#1f7a8c] text-xs font-bold text-white">{initials(u)}</div>
-                        <div>
-                          <p className="text-sm font-semibold">{userName(u)}</p>
-                          <p className="text-xs text-[--text-3]">{u.mobile ?? u.email}</p>
+              <div className="overflow-hidden rounded-2xl border border-[--border] bg-[--surface]">
+                <div className="flex items-center gap-3 border-b border-[--border] px-5 py-4">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-indigo-600 text-white"><FolderKanban size={17} /></div>
+                  <div>
+                    <h2 className="font-bold">پروژه‌های من</h2>
+                    <p className="text-[11px] text-[--text-3]">{tasks.length} پروژه واگذارشده · برای دانلود فایل اکسل کلیک کن</p>
+                  </div>
+                </div>
+                <div className="divide-y divide-[--border]">
+                  {tasks.length === 0 ? (
+                    <p className="py-10 text-center text-sm text-[--text-3]">پروژه‌ای به شما واگذار نشده</p>
+                  ) : tasks.map((t) => (
+                    <button key={getId(t)} className="flex w-full items-center justify-between gap-3 px-5 py-4 text-right transition hover:bg-[--surface-2]" onClick={() => setSelectedTask(t)} type="button">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="truncate text-sm font-semibold">{t.title}</p>
+                          {t.excelFile && (
+                            <span className="flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400"><FileSpreadsheet size={10} />اکسل</span>
+                          )}
                         </div>
+                        {t.description && <p className="mt-0.5 truncate text-xs text-[--text-3]">{t.description}</p>}
                       </div>
-                      {isManager ? (
-                        <select
-                          className="h-8 rounded-lg border border-[--border] bg-[--surface] px-2 text-xs"
-                          value={u.roles ?? "specialist"}
-                          onChange={(e) => void updateUserRole(getId(u), e.target.value)}
-                        >
-                          <option value="specialist">specialist</option>
-                          <option value="supervisor">supervisor</option>
-                          <option value="manager">manager</option>
-                        </select>
-                      ) : (
-                        <span className="rounded-lg bg-[--surface] px-2.5 py-1 text-xs font-medium">{u.roles ?? "specialist"}</span>
-                      )}
+                      <span className={`shrink-0 rounded-md px-2 py-0.5 text-[10px] font-bold ${COLUMNS.find((c) => c.status === t.status)?.badge ?? "bg-slate-100 text-slate-600"}`}>{statusLabel(t.status)}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </section>
+          )}
+
+          {isManager && activeView === "tasks-admin" && (
+            <section className="space-y-4">
+              {/* New project */}
+              <div className="overflow-hidden rounded-2xl border border-[--border] bg-[--surface]">
+                <div className="flex items-center justify-between px-5 py-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-indigo-600 text-white"><FolderKanban size={17} /></div>
+                    <div>
+                      <h2 className="font-bold">پروژه جدید</h2>
+                      <p className="text-[11px] text-[--text-3]">یک پروژه با فایل اکسل برای کارشناس تعریف کن</p>
+                    </div>
+                  </div>
+                  <button
+                    className="flex h-9 items-center gap-1.5 rounded-lg bg-[#1f7a8c] px-4 text-sm font-semibold text-white transition hover:bg-[#196b7b]"
+                    onClick={() => setShowNewProjectForm((v) => { if (v) setTaskFile(null); return !v; })} type="button"
+                  >
+                    {showNewProjectForm ? <X size={15} /> : <Plus size={15} />}
+                    {showNewProjectForm ? "بستن" : "پروژه جدید"}
+                  </button>
+                </div>
+                {showNewProjectForm && (
+                  <form className="grid gap-3 border-t border-[--border] bg-[--surface-2]/60 p-4 sm:grid-cols-2 xl:grid-cols-3" onSubmit={createTask}>
+                    <Field label="عنوان پروژه *" name="projTitle" value={taskTitle} onChange={setTaskTitle} required placeholder="مثلاً: تکمیل اکسل فروش" />
+                    <Select label="مسئول (کارشناس)" value={taskAssignee} onChange={setTaskAssignee} options={users.map((u) => [getId(u), userName(u)])} placeholder="بدون مسئول (خودم)" />
+                    <label className="flex h-10 cursor-pointer items-center gap-1.5 rounded-lg border border-dashed border-[--border] bg-[--surface] px-3 text-sm font-medium text-[--text-2] transition hover:bg-[--surface-2] sm:col-span-2">
+                      <FileSpreadsheet size={15} className="text-[#1f7a8c]" />
+                      <span className="truncate">{taskFile ? taskFile.name : "ضمیمه فایل اکسل (اختیاری)"}</span>
+                      <input accept=".xlsx,.xls" className="hidden" onChange={(e) => setTaskFile(e.target.files?.[0] ?? null)} type="file" />
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <button className="h-10 flex-1 rounded-lg bg-[#1f7a8c] px-4 text-sm font-semibold text-white disabled:opacity-50" disabled={!taskTitle.trim()} type="submit">ایجاد پروژه</button>
+                      {taskFile && <button className="h-10 rounded-lg border border-[--border] bg-[--surface] px-3 text-xs font-medium text-red-500" onClick={() => setTaskFile(null)} type="button">حذف فایل</button>}
+                    </div>
+                  </form>
+                )}
+              </div>
+
+              {/* All tasks */}
+              <div className="overflow-hidden rounded-2xl border border-[--border] bg-[--surface]">
+                <div className="flex items-center gap-3 border-b border-[--border] px-5 py-4">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[#1f7a8c] to-[#165e6d] text-white"><ClipboardList size={17} /></div>
+                  <div>
+                    <h2 className="font-bold">همه گزارش‌ها</h2>
+                    <p className="text-[11px] text-[--text-3]">{tasks.length} پروژه</p>
+                  </div>
+                </div>
+                <div className="divide-y divide-[--border] max-h-[360px] overflow-y-auto">
+                  {tasks.length === 0 ? (
+                    <p className="py-8 text-center text-sm text-[--text-3]">پروژه‌ای یافت نشد</p>
+                  ) : tasks.map((t) => (
+                    <div key={getId(t)} className="flex items-center justify-between gap-3 px-5 py-3">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold">{t.title}</p>
+                        <p className="text-xs text-[--text-3]">{(t.assignedTo ?? []).map(userName).join("، ") || "بدون مسئول"}</p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${COLUMNS.find((c) => c.status === t.status)?.badge ?? "bg-slate-100 text-slate-600"}`}>{statusLabel(t.status)}</span>
+                        <button className="flex h-8 w-8 items-center justify-center rounded-lg text-red-500 transition hover:bg-red-50 dark:hover:bg-red-950/40" onClick={() => void deleteTask(getId(t))} type="button"><Trash2 size={14} /></button>
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
+
+              {/* Tasks by user name */}
               <div className="rounded-2xl border border-[--border] bg-[--surface] p-5">
-                <h2 className="font-bold">{isManager ? "درخواست‌های مرخصی" : "مرخصی من"}</h2>
+                <h2 className="font-bold">پروژه‌های یک کاربر (بر اساس نام)</h2>
+                <form className="mt-4 flex flex-wrap items-end gap-2" onSubmit={taLookupTasks}>
+                  <Field label="نام" name="taLookupFirst" value={taLookupFirst} onChange={setTaLookupFirst} />
+                  <Field label="نام خانوادگی" name="taLookupLast" value={taLookupLast} onChange={setTaLookupLast} />
+                  <button className="h-10 rounded-lg bg-[#1f7a8c] px-5 text-sm font-semibold text-white disabled:opacity-50" disabled={!taLookupFirst.trim() || !taLookupLast.trim()} type="submit">جستجو</button>
+                </form>
+                {taLookupResult !== null && (
+                  <div className="mt-4 space-y-2">
+                    {taLookupResult.length === 0 ? (
+                      <p className="text-sm text-[--text-3]">پروژه‌ای برای این کاربر یافت نشد</p>
+                    ) : taLookupResult.map((t) => (
+                      <div key={getId(t)} className="flex items-center justify-between rounded-xl border border-[--border] bg-[--surface-2] px-4 py-2.5">
+                        <p className="text-sm font-medium">{t.title}</p>
+                        <span className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${COLUMNS.find((c) => c.status === t.status)?.badge ?? "bg-slate-100 text-slate-600"}`}>{statusLabel(t.status)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="grid gap-4 lg:grid-cols-2">
+                {/* Completion stats */}
+                <div className="rounded-2xl border border-[--border] bg-[--surface] p-5">
+                  <h2 className="font-bold">آمار تکمیل پروژه</h2>
+                  <p className="mt-1 text-xs text-[--text-3]">پروژه‌های ساخته‌شده توسط شما و واگذارشده به یک متخصص</p>
+                  <form className="mt-4 flex flex-wrap items-end gap-2" onSubmit={taRunCompletionStats}>
+                    <div className="min-w-[200px] flex-1"><Select label="متخصص" value={taCompletionExpert} onChange={setTaCompletionExpert} options={users.map((u) => [getId(u), userName(u)])} placeholder="انتخاب متخصص" /></div>
+                    <button className="h-10 rounded-lg bg-[#1f7a8c] px-5 text-sm font-semibold text-white disabled:opacity-50" disabled={!taCompletionExpert} type="submit">محاسبه</button>
+                  </form>
+                  {taCompletionResult && (
+                    <pre className="mt-4 overflow-x-auto rounded-xl bg-[--surface-2] p-3 text-xs text-[--text-2]" dir="ltr">{JSON.stringify(taCompletionResult, null, 2)}</pre>
+                  )}
+                </div>
+
+                {/* Date count */}
+                <div className="rounded-2xl border border-[--border] bg-[--surface] p-5">
+                  <h2 className="font-bold">تعداد پروژه در بازه تاریخی</h2>
+                  <form className="mt-4 grid gap-2 sm:grid-cols-2" onSubmit={taRunDateCount}>
+                    <div className="sm:col-span-2"><Select label="کاربر" value={taCountUser} onChange={setTaCountUser} options={users.map((u) => [getId(u), userName(u)])} placeholder="انتخاب کاربر" /></div>
+                    <Field label="از تاریخ" name="taCountStart" type="date" value={taCountStart} onChange={setTaCountStart} />
+                    <Field label="تا تاریخ" name="taCountEnd" type="date" value={taCountEnd} onChange={setTaCountEnd} />
+                    <div className="sm:col-span-2"><button className="h-10 rounded-lg bg-[#1f7a8c] px-5 text-sm font-semibold text-white disabled:opacity-50" disabled={!taCountUser || !taCountStart || !taCountEnd} type="submit">محاسبه</button></div>
+                  </form>
+                  {taCountResult && (
+                    <pre className="mt-4 overflow-x-auto rounded-xl bg-[--surface-2] p-3 text-xs text-[--text-2]" dir="ltr">{JSON.stringify(taCountResult, null, 2)}</pre>
+                  )}
+                </div>
+              </div>
+            </section>
+          )}
+
+          {!isManager && activeView === "leave" && (
+            <section className="space-y-4">
+              <div className="rounded-2xl border border-[--border] bg-[--surface] p-5">
+                <div className="flex items-center gap-2">
+                  <CalendarDays size={17} className="text-[#1f7a8c]" />
+                  <h2 className="font-bold">درخواست مرخصی</h2>
+                </div>
                 <form className="mt-4 grid gap-3 sm:grid-cols-2" onSubmit={createLeaveRequest}>
                   <Field label="از تاریخ" name="leaveStart" type="date" value={leaveStart} onChange={setLeaveStart} required />
                   <Field label="تا تاریخ" name="leaveEnd" type="date" value={leaveEnd} onChange={setLeaveEnd} required />
@@ -1605,23 +1922,216 @@ export default function Home() {
                     <button className="h-10 rounded-lg bg-[#1f7a8c] px-4 text-sm font-semibold text-white" type="submit">ثبت درخواست</button>
                   </div>
                 </form>
-                <div className="mt-4 space-y-2">
-                  {leaveRequests.map((lr) => (
-                    <div key={getId(lr)} className="flex items-center justify-between rounded-xl border border-[--border] px-4 py-3 text-sm">
-                      <div>
-                        <p className="font-semibold">{userName(lr.user)} · {statusLabel(lr.status)}</p>
-                        <p className="text-xs text-[--text-3]">{formatDate(lr.startDate)} تا {formatDate(lr.endDate)}</p>
-                      </div>
-                      {isManager && lr.status === "pending" && (
-                        <div className="flex gap-2">
-                          <button className="rounded-lg bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-600" onClick={() => void handleLeaveAction(getId(lr), "approve")} type="button">تأیید</button>
-                          <button className="rounded-lg bg-red-50 px-3 py-1 text-xs font-semibold text-red-600" onClick={() => void handleLeaveAction(getId(lr), "reject")} type="button">رد</button>
+              </div>
+
+              <div className="overflow-hidden rounded-2xl border border-[--border] bg-[--surface]">
+                <div className="border-b border-[--border] px-5 py-4">
+                  <h2 className="font-bold">درخواست‌های من</h2>
+                </div>
+                <div className="divide-y divide-[--border]">
+                  {leaveRequests.length === 0 ? (
+                    <p className="py-8 text-center text-sm text-[--text-3]">درخواستی ثبت نکرده‌ای</p>
+                  ) : leaveRequests.map((lr) => {
+                    const badge = lr.status === "approved" ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400"
+                      : lr.status === "rejected" ? "bg-red-50 text-red-600 dark:bg-red-950/40 dark:text-red-400"
+                      : "bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400";
+                    return (
+                      <div key={getId(lr)} className="flex items-center justify-between gap-3 px-5 py-3.5">
+                        <div>
+                          <p className="text-sm font-semibold">{formatDate(lr.startDate)} تا {formatDate(lr.endDate)}</p>
+                          {lr.reason && <p className="mt-0.5 text-xs text-[--text-3]">{lr.reason}</p>}
                         </div>
+                        <span className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${badge}`}>{statusLabel(lr.status)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </section>
+          )}
+
+          {(isManager || isSupervisor) && activeView === "leave" && (
+            <section className="space-y-4">
+              {/* Stats */}
+              <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                {[
+                  { label: "کل درخواست‌ها", value: leaveRequests.length },
+                  { label: "در انتظار", value: leaveRequests.filter((lr) => lr.status === "pending").length },
+                  { label: "تأیید شده", value: leaveRequests.filter((lr) => lr.status === "approved").length },
+                  { label: "رد شده", value: leaveRequests.filter((lr) => lr.status === "rejected").length },
+                ].map((s) => (
+                  <div key={s.label} className="rounded-xl border border-[--border] bg-[--surface] p-4">
+                    <p className="text-xs text-[--text-3]">{s.label}</p>
+                    <p className="mt-1 text-2xl font-bold">{s.value}</p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="overflow-hidden rounded-2xl border border-[--border] bg-[--surface]">
+                <div className="flex items-center gap-3 border-b border-[--border] px-5 py-4">
+                  <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[#1f7a8c] to-[#165e6d] text-white"><CalendarDays size={17} /></div>
+                  <div>
+                    <h2 className="font-bold">درخواست‌های مرخصی</h2>
+                    <p className="text-[11px] text-[--text-3]">همه درخواست‌ها و وضعیت تأیید</p>
+                  </div>
+                </div>
+                <div className="divide-y divide-[--border]">
+                  {leaveRequests.length === 0 ? (
+                    <p className="py-10 text-center text-sm text-[--text-3]">درخواست مرخصی‌ای ثبت نشده</p>
+                  ) : leaveRequests.map((lr) => {
+                    const badge = lr.status === "approved"
+                      ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400"
+                      : lr.status === "rejected"
+                      ? "bg-red-50 text-red-600 dark:bg-red-950/40 dark:text-red-400"
+                      : "bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400";
+                    return (
+                      <div key={getId(lr)} className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#1f7a8c] text-xs font-bold text-white">{initials(lr.user)}</div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <p className="font-semibold">{userName(lr.user)}</p>
+                              <span className={`rounded-md px-2 py-0.5 text-[10px] font-bold ${badge}`}>{statusLabel(lr.status)}</span>
+                            </div>
+                            <p className="mt-0.5 text-xs text-[--text-3]">
+                              {formatDate(lr.startDate)} تا {formatDate(lr.endDate)}
+                              {lr.reason ? ` · ${lr.reason}` : ""}
+                              {lr.approvedBy ? ` · بررسی: ${userName(lr.approvedBy)}` : ""}
+                            </p>
+                          </div>
+                        </div>
+                        {lr.status === "pending" && (
+                          <div className="flex gap-2 shrink-0">
+                            <button className="rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-600 transition hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-400" onClick={() => void handleLeaveAction(getId(lr), "approve")} type="button">تأیید</button>
+                            <button className="rounded-lg bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:bg-red-950/40 dark:text-red-400" onClick={() => void handleLeaveAction(getId(lr), "reject")} type="button">رد</button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </section>
+          )}
+
+          {activeView === "team" && (
+            <section className="space-y-4">
+              <div className="rounded-2xl border border-[--border] bg-[--surface] p-5">
+                <div className="flex items-center justify-between">
+                  <h2 className="font-bold">اعضای تیم</h2>
+                  {isManager && (
+                    <button
+                      className="flex h-9 items-center gap-1.5 rounded-lg bg-[#1f7a8c] px-4 text-sm font-semibold text-white transition hover:bg-[#196b7b]"
+                      onClick={() => setShowNewUserForm((v) => !v)} type="button"
+                    >
+                      {showNewUserForm ? <X size={15} /> : <Plus size={15} />}
+                      {showNewUserForm ? "بستن" : "کاربر جدید"}
+                    </button>
+                  )}
+                </div>
+
+                {isManager && showNewUserForm && (
+                  <form className="mt-4 grid gap-3 rounded-xl border border-[--border] bg-[--surface-2] p-4 sm:grid-cols-2" onSubmit={createUser}>
+                    <Field label="نام *" name="newUserFirstName" value={newUserFirstName} onChange={setNewUserFirstName} required />
+                    <Field label="نام خانوادگی *" name="newUserLastName" value={newUserLastName} onChange={setNewUserLastName} required />
+                    <Field label="ایمیل *" name="newUserEmail" type="email" value={newUserEmail} onChange={setNewUserEmail} required placeholder="user@example.com" />
+                    <Field label="موبایل" name="newUserMobile" value={newUserMobile} onChange={setNewUserMobile} placeholder="اختیاری · 09xxxxxxxxx" />
+                    <Field label="رمز عبور *" name="newUserPassword" type="password" value={newUserPassword} onChange={setNewUserPassword} required placeholder="حداقل ۶ کاراکتر" />
+                    <Select label="حوزه کاری *" value={newUserWorkField} onChange={(v) => setNewUserWorkField(v as WorkField)} options={[["it", "فناوری اطلاعات"], ["human_resources", "منابع انسانی"], ["finance", "مالی"], ["sales", "فروش"], ["operations", "عملیات"]]} />
+                    <Select label="نقش" value={newUserRole} onChange={setNewUserRole} options={[["specialist", "specialist"], ["supervisor", "supervisor"], ["manager", "manager"]]} />
+                    <div className="sm:col-span-2">
+                      <button className="h-10 rounded-lg bg-[#1f7a8c] px-5 text-sm font-semibold text-white disabled:opacity-50" disabled={!newUserFirstName.trim() || !newUserLastName.trim() || !newUserEmail.trim() || newUserPassword.length < 6} type="submit">ساخت کاربر</button>
+                    </div>
+                  </form>
+                )}
+
+                {isManager && (
+                  <form className="mt-4 flex flex-wrap items-center gap-2" onSubmit={searchTeamUser}>
+                    <input
+                      className="h-9 flex-1 min-w-[200px] rounded-lg border border-[--border] bg-[--surface] px-3 text-sm text-[--text] outline-none transition placeholder:text-[--text-3] focus:border-[#1f7a8c] focus:ring-2 focus:ring-[#1f7a8c]/15"
+                      placeholder="جستجوی کاربر بر اساس نام و نام خانوادگی…"
+                      value={teamQuery}
+                      onChange={(e) => setTeamQuery(e.target.value)}
+                    />
+                    <button className="flex h-9 items-center gap-1.5 rounded-lg bg-[#1f7a8c] px-4 text-sm font-semibold text-white transition hover:bg-[#196b7b] disabled:opacity-50" disabled={teamSearching || !teamQuery.trim()} type="submit">
+                      {teamSearching ? <Loader2 className="animate-spin" size={15} /> : <Search size={15} />}جستجو
+                    </button>
+                    {teamSearchResult !== null && (
+                      <button className="flex h-9 items-center gap-1.5 rounded-lg border border-[--border] bg-[--surface-2] px-4 text-sm font-semibold transition hover:bg-[--surface]" onClick={clearTeamSearch} type="button">
+                        <X size={15} />پاک کردن
+                      </button>
+                    )}
+                  </form>
+                )}
+
+                <div className="mt-4 space-y-2">
+                  {teamSearchResult !== null && teamSearchResult.length === 0 && (
+                    <p className="rounded-xl border border-dashed border-[--border] p-6 text-center text-sm text-[--text-3]">کاربری با این نام یافت نشد</p>
+                  )}
+                  {(teamSearchResult ?? users).map((u) => (
+                    <div key={getId(u)} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[--border] bg-[--surface-2] px-4 py-3">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#1f7a8c] text-xs font-bold text-white">{initials(u)}</div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <p className="text-sm font-semibold">{userName(u)}</p>
+                            {u.isActive === false && (
+                              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-700 dark:bg-amber-950/50 dark:text-amber-400">در انتظار تأیید</span>
+                            )}
+                            <span className="rounded-full bg-[--surface] px-2 py-0.5 text-[10px] font-semibold text-[--text-2]">امتیاز: {u.score ?? 0}</span>
+                          </div>
+                          <p className="text-xs text-[--text-3]">{u.mobile ?? u.email}</p>
+                        </div>
+                      </div>
+                      {isManager ? (
+                        <div className="flex flex-wrap items-center gap-2">
+                          {u.isActive === false && (
+                            <button className="rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-600 transition hover:bg-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-400" onClick={() => void approveUser(getId(u))} type="button">تأیید</button>
+                          )}
+                          <button className="rounded-lg bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-600 transition hover:bg-amber-100 dark:bg-amber-950/40 dark:text-amber-400" onClick={() => void increaseUserScore(getId(u))} type="button">+ امتیاز</button>
+                          <select
+                            className="h-8 rounded-lg border border-[--border] bg-[--surface] px-2 text-xs"
+                            value={u.roles ?? "specialist"}
+                            onChange={(e) => void updateUserRole(getId(u), e.target.value)}
+                          >
+                            <option value="specialist">specialist</option>
+                            <option value="supervisor">supervisor</option>
+                            <option value="manager">manager</option>
+                          </select>
+                          {getId(u) !== myId && (
+                            <button className="flex h-8 w-8 items-center justify-center rounded-lg text-red-500 transition hover:bg-red-50 dark:hover:bg-red-950/40" onClick={() => void deleteUser(getId(u))} type="button"><Trash2 size={14} /></button>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="rounded-lg bg-[--surface] px-2.5 py-1 text-xs font-medium">{u.roles ?? "specialist"}</span>
                       )}
                     </div>
                   ))}
                 </div>
               </div>
+              {!isManager && (
+                <div className="rounded-2xl border border-[--border] bg-[--surface] p-5">
+                  <h2 className="font-bold">مرخصی من</h2>
+                  <form className="mt-4 grid gap-3 sm:grid-cols-2" onSubmit={createLeaveRequest}>
+                    <Field label="از تاریخ" name="leaveStart" type="date" value={leaveStart} onChange={setLeaveStart} required />
+                    <Field label="تا تاریخ" name="leaveEnd" type="date" value={leaveEnd} onChange={setLeaveEnd} required />
+                    <Field label="دلیل" name="leaveReason" value={leaveReason} onChange={setLeaveReason} placeholder="اختیاری" />
+                    <div className="flex items-end">
+                      <button className="h-10 rounded-lg bg-[#1f7a8c] px-4 text-sm font-semibold text-white" type="submit">ثبت درخواست</button>
+                    </div>
+                  </form>
+                  <div className="mt-4 space-y-2">
+                    {leaveRequests.map((lr) => (
+                      <div key={getId(lr)} className="flex items-center justify-between rounded-xl border border-[--border] px-4 py-3 text-sm">
+                        <div>
+                          <p className="font-semibold">{userName(lr.user)} · {statusLabel(lr.status)}</p>
+                          <p className="text-xs text-[--text-3]">{formatDate(lr.startDate)} تا {formatDate(lr.endDate)}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </section>
           )}
 
@@ -1670,6 +2180,12 @@ export default function Home() {
                     <div className="flex items-center gap-2">
                       <button className="flex h-9 items-center gap-2 rounded-lg border border-[--border] bg-[--surface-2] px-4 text-sm font-semibold transition hover:bg-[--surface]" onClick={() => void loadManagerAnalytics()} type="button">
                         <RefreshCw size={15} />
+                      </button>
+                      <button
+                        className="flex h-9 items-center gap-1.5 rounded-lg border border-[--border] bg-[--surface-2] px-4 text-sm font-semibold transition hover:bg-[--surface]"
+                        onClick={() => void seedFixedTasksFromExcel()} type="button"
+                      >
+                        <Upload size={15} />ایمپورت از اکسل
                       </button>
                       <button
                         className="flex h-9 items-center gap-1.5 rounded-xl bg-gradient-to-l from-[#1f7a8c] to-[#2491a5] px-4 text-sm font-semibold text-white shadow-sm transition hover:shadow-md active:scale-[0.98]"
@@ -1894,7 +2410,7 @@ export default function Home() {
             </section>
           )}
 
-          {((!isSupervisor && (activeView === "dashboard" || activeView === "tasks" || activeView === "projects")) || (isSupervisor && activeView === "tasks")) && (<>
+          {((!isSupervisor && (activeView === "dashboard" || activeView === "tasks")) || (isSupervisor && activeView === "tasks")) && (<>
 
           {/* Welcome banner */}
           <div className={`relative overflow-hidden rounded-2xl px-6 py-5 text-white shadow-lg ${isManager ? "bg-gradient-to-l from-indigo-700 via-indigo-600 to-indigo-500 shadow-indigo-500/15" : "bg-gradient-to-l from-[#1a6b7c] via-[#1f7a8c] to-[#2491a5] shadow-[#1f7a8c]/15"}`}>
@@ -1923,13 +2439,13 @@ export default function Home() {
           <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
             {(isManager
               ? [
-                  { label: "پروژه‌ها", value: statsProjects, sub: "فعال", icon: FolderKanban, a: "bg-indigo-50 text-indigo-600 ring-indigo-100 dark:bg-indigo-950/40 dark:text-indigo-400 dark:ring-indigo-900", onClick: () => setActiveView("projects") },
+                  { label: "پروژه‌ها", value: tasks.length, sub: "پروژه", icon: FolderKanban, a: "bg-indigo-50 text-indigo-600 ring-indigo-100 dark:bg-indigo-950/40 dark:text-indigo-400 dark:ring-indigo-900", onClick: () => setActiveView("tasks-admin") },
                   { label: "گزارش‌های باز", value: managerStats?.openTasks ?? activeTasks, sub: `${inProgressTasks} جاری`, icon: ClipboardList, a: "bg-[#e8f4f7] text-[#1f7a8c] ring-[#1f7a8c]/10 dark:bg-[#0f3040] dark:text-[#4fc3d5] dark:ring-[#1f7a8c]/20", onClick: () => setActiveView("tasks") },
                   { label: "کاربران فعال", value: managerStats?.activeUsers ?? statsUsers, sub: "کاربر", icon: UsersRound, a: "bg-amber-50 text-amber-600 ring-amber-100 dark:bg-amber-950/40 dark:text-amber-400 dark:ring-amber-900", onClick: () => setActiveView("team") },
                   { label: "آنالیتیکس", value: managerTaskStatus?.doneTasks ?? managerTaskStatus?.done ?? doneTasks, sub: "گزارش تکمیل", icon: BarChart2, a: "bg-emerald-50 text-emerald-600 ring-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-400 dark:ring-emerald-900", onClick: () => setActiveView("analytics") },
                 ]
               : [
-                  { label: "پروژه‌ها", value: statsProjects, sub: "فعال", icon: FolderKanban, a: "bg-violet-50 text-violet-600 ring-violet-100 dark:bg-violet-950/40 dark:text-violet-400 dark:ring-violet-900", onClick: undefined },
+                  { label: "پروژه‌ها", value: tasks.length, sub: "واگذارشده", icon: FolderKanban, a: "bg-indigo-50 text-indigo-600 ring-indigo-100 dark:bg-indigo-950/40 dark:text-indigo-400 dark:ring-indigo-900", onClick: () => setActiveView("tasks-admin") },
                   { label: "گزارش‌های باز", value: activeTasks, sub: `${inProgressTasks} جاری`, icon: ClipboardList, a: "bg-[#e8f4f7] text-[#1f7a8c] ring-[#1f7a8c]/10 dark:bg-[#0f3040] dark:text-[#4fc3d5] dark:ring-[#1f7a8c]/20", onClick: undefined },
                   { label: "اعضای تیم", value: statsUsers, sub: "کاربر", icon: UsersRound, a: "bg-amber-50 text-amber-600 ring-amber-100 dark:bg-amber-950/40 dark:text-amber-400 dark:ring-amber-900", onClick: undefined },
                   { label: "تکمیل شده", value: doneTasks, sub: `${progress}% پیشرفت`, icon: TrendingUp, a: "bg-emerald-50 text-emerald-600 ring-emerald-100 dark:bg-emerald-950/40 dark:text-emerald-400 dark:ring-emerald-900", onClick: undefined },
@@ -1978,7 +2494,31 @@ export default function Home() {
             </div>
           )}
 
-          {/* Kanban board */}
+          {/* Specialist reminder/alert — above the board */}
+          {isSpecialist && activeView === "dashboard" && (() => {
+            const overdueReports = fixedTasks.filter((f) => f.nextRunAt && new Date(f.nextRunAt) < new Date()).length;
+            const dailyReports = fixedTasks.filter((f) => f.isActive !== false && (f.recurrence ?? "daily") === "daily").length;
+            const openTasks = tasks.filter((t) => t.status !== "done").length;
+            const parts: string[] = [];
+            if (overdueReports) parts.push(`${overdueReports} گزارش مهلت‌گذشته`);
+            if (dailyReports) parts.push(`${dailyReports} گزارش روزانه برای امروز`);
+            if (openTasks) parts.push(`${openTasks} پروژه باز`);
+            if (parts.length === 0) return null;
+            const urgent = overdueReports > 0;
+            return (
+              <div className={`flex items-center gap-3 rounded-2xl border px-5 py-3.5 ${urgent ? "border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/30" : "border-amber-200 bg-amber-50 dark:border-amber-900 dark:bg-amber-950/30"}`}>
+                <AlertTriangle size={20} className={urgent ? "shrink-0 text-red-500" : "shrink-0 text-amber-500"} />
+                <div>
+                  <p className={`text-sm font-bold ${urgent ? "text-red-700 dark:text-red-400" : "text-amber-700 dark:text-amber-400"}`}>
+                    {urgent ? "حواست باشه! کارهای عقب‌افتاده داری" : "یادآوری کارهای امروز"}
+                  </p>
+                  <p className="mt-0.5 text-xs text-[--text-2]">{parts.join(" · ")}</p>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Fixed-task board (recurring reports) */}
           {(activeView === "dashboard" || activeView === "tasks") && <div className="overflow-hidden rounded-2xl border border-[#b8dfe8] dark:border-[#1f5060] bg-[--surface] shadow-md shadow-[#1f7a8c]/8">
             <div className="flex flex-col gap-3 border-b border-[#cce8ef] dark:border-[#1f5060] bg-gradient-to-l from-[#e0f4f8] to-[#f0fafb] dark:from-[#0f2535] dark:to-[#0f172a] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex items-center gap-3">
@@ -1986,372 +2526,198 @@ export default function Home() {
                   <ClipboardList size={17} />
                 </div>
                 <div>
-                  <h2 className="font-bold text-[--text]">برد گزارش ها</h2>
-                  <p className="text-[11px] text-[--text-3]">کانبان با drag & drop · {tasks.length} گزارش</p>
+                  <h2 className="font-bold text-[--text]">برد گزارش‌ها</h2>
+                  <p className="text-[11px] text-[--text-3]">
+                    گزارش‌های ثابت بر اساس دوره · {fixedTasks.length} گزارش
+                    {(() => { const od = fixedTasks.filter((f) => f.nextRunAt && new Date(f.nextRunAt) < new Date()).length; return od ? ` · ${od} مهلت‌گذشته` : ""; })()}
+                  </p>
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                <span className="flex h-8 items-center gap-1.5 rounded-lg bg-[--surface-2] px-3 text-xs font-medium text-[--text-2]">
-                  <ListFilter size={12} />{filteredTasks.length}/{tasks.length}
-                </span>
-                {hasTaskFilters && (
-                  <button
-                    className="flex h-8 items-center gap-1 rounded-lg border border-red-200 bg-red-50 px-2.5 text-xs font-medium text-red-600 transition hover:bg-red-100 dark:border-red-900 dark:bg-red-950/40 dark:text-red-400"
-                    onClick={() => {
-                      setTaskQuery("");
-                      setSelectedProjectFilter("");
-                      setSelectedStatusFilter("");
-                      setSelectedAssigneeFilter("");
-                      setSelectedPriorityFilter("");
-                      setSelectedPeriodFilter("");
-                    }}
-                    type="button"
-                  >
-                    <X size={11} /> پاک فیلترها
+                <div className="flex rounded-lg border border-[--border] bg-[--surface] p-0.5 text-xs">
+                  {([["", "همه"], ["daily", "روزانه"], ["weekly", "هفتگی"], ["monthly", "ماهانه"]] as const).map(([val, lbl]) => (
+                    <button
+                      key={val}
+                      className={`rounded-md px-2.5 py-1 font-semibold transition ${selectedPeriodFilter === val ? "bg-[#1f7a8c] text-white" : "text-[--text-2] hover:bg-[--surface-2]"}`}
+                      onClick={() => setSelectedPeriodFilter(val as TaskPeriod | "")} type="button"
+                    >{lbl}</button>
+                  ))}
+                </div>
+                <input
+                  className="h-8 w-44 rounded-lg border border-[--border] bg-[--surface] px-3 text-xs text-[--text] outline-none transition placeholder:text-[--text-3] focus:border-[#1f7a8c]"
+                  placeholder="جستجوی گزارش…" value={taskQuery} onChange={(e) => setTaskQuery(e.target.value)}
+                />
+                {isManager && (
+                  <button className="flex h-8 items-center gap-1.5 rounded-lg bg-[#1f7a8c] px-3 text-xs font-semibold text-white transition hover:bg-[#196b7b]" onClick={() => { setActiveView("fixed-reports"); openFixedTaskForm(); }} type="button">
+                    <Plus size={13} />گزارش ثابت جدید
                   </button>
                 )}
               </div>
             </div>
 
-            <div className="flex gap-2 overflow-x-auto border-b border-[--border] bg-[--surface-2]/50 px-4 py-2.5 scrollbar-hide">
-              <FilterChip active={!selectedProjectFilter} label="همه" count={tasks.length} onClick={() => setSelectedProjectFilter("")} />
-              {projects.slice(0, 6).map((p) => {
-                const pid = getId(p);
-                const count = tasks.filter((t) => getId(t.projectId) === pid).length;
+            <div className="grid gap-4 bg-[--surface-2]/40 p-4 lg:grid-cols-3">
+              {COLUMNS.map((col) => {
+                const items = col.status === "todo" ? filteredFixedTemplates : [];
                 return (
-                  <FilterChip
-                    key={pid}
-                    active={selectedProjectFilter === pid}
-                    label={p.title}
-                    count={count || projectProgress[pid]?.totalTasks || 0}
-                    onClick={() => setSelectedProjectFilter(selectedProjectFilter === pid ? "" : pid)}
-                  />
+                  <div key={col.status} className={`flex flex-col rounded-2xl border ${col.border} ${col.colBg}`}>
+                    <div className={`flex items-center justify-between rounded-t-2xl bg-gradient-to-l ${col.headerGrad} px-4 py-3`}>
+                      <div className="flex items-center gap-2">
+                        <span className={`h-2.5 w-2.5 rounded-full ${col.dot}`} />
+                        <h3 className={`text-sm font-bold ${col.headerText}`}>{col.title}</h3>
+                      </div>
+                      <span className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${col.badge}`}>{items.length}</span>
+                    </div>
+                    <div className="flex flex-col gap-2.5 p-2.5 min-h-[120px]">
+                      {items.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-[--border] py-10">
+                          <CircleDashed size={26} className="text-[--text-3] opacity-30" />
+                          <p className="mt-2 text-xs text-[--text-3]">گزارشی نیست</p>
+                        </div>
+                      ) : items.map((ft) => (
+                        <article
+                          key={getId(ft)}
+                          className={`rounded-xl border border-[--border] border-t-[3px] border-t-[#1f7a8c] bg-[--surface] p-3.5 shadow-sm transition-all ${isManager ? "cursor-pointer hover:-translate-y-0.5 hover:shadow-md" : ""}`}
+                          onClick={isManager ? () => { setActiveView("fixed-reports"); openFixedTaskForm(ft); } : undefined}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="rounded-md border border-[#b8dfe8] bg-[#e8f4f7] px-1.5 py-0.5 text-[10px] font-bold text-[#1f7a8c] dark:border-[#1f5060] dark:bg-[#0f3040] dark:text-[#4fc3d5]">ثابت · {recurrenceLabel(ft.recurrence)}</span>
+                            {ft.nextRunAt && new Date(ft.nextRunAt) < new Date()
+                              ? <span className="rounded-md bg-red-50 px-1.5 py-0.5 text-[10px] font-bold text-red-600 dark:bg-red-950/40 dark:text-red-400">مهلت گذشته</span>
+                              : <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${ft.isActive !== false ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400" : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"}`}>{ft.isActive !== false ? "فعال" : "غیرفعال"}</span>}
+                          </div>
+                          <div className="mt-2.5 flex items-start gap-2">
+                            <ClipboardList size={15} className="mt-0.5 shrink-0 text-[#1f7a8c]" />
+                            <h4 className="text-sm font-semibold leading-snug">{ft.title}</h4>
+                          </div>
+                          {ft.description && <p className="mt-2 line-clamp-2 text-xs leading-5 text-[--text-3]">{ft.description}</p>}
+                          <div className="mt-3 flex items-center justify-between gap-2">
+                            <AssigneeStack users={ft.assignedTo ? [ft.assignedTo] : []} />
+                            {ft.nextRunAt && (
+                              <div className="flex items-center gap-1 rounded-md bg-[--surface-2] px-2 py-1 text-[10px] text-[--text-3]"><CalendarDays size={10} />{formatDate(ft.nextRunAt)}</div>
+                            )}
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  </div>
                 );
               })}
             </div>
-
-            <div className="grid gap-3 border-b border-[--border] bg-[--surface] px-4 py-3 sm:grid-cols-2 xl:grid-cols-4">
-              <Select
-                label="وضعیت"
-                value={selectedStatusFilter}
-                onChange={setSelectedStatusFilter}
-                options={COLUMNS.map((col) => [col.status, col.title])}
-                placeholder="همه وضعیت‌ها"
-              />
-              <Select
-                label="مسئول"
-                value={selectedAssigneeFilter}
-                onChange={setSelectedAssigneeFilter}
-                options={users.map((u) => [getId(u), userName(u)])}
-                placeholder="همه مسئول‌ها"
-              />
-              <Select
-                label="اولویت"
-                value={selectedPriorityFilter}
-                onChange={(value) => setSelectedPriorityFilter(value as Priority | "")}
-                options={(Object.keys(PRIORITY) as Priority[]).map((key) => [key, PRIORITY[key].label])}
-                placeholder="همه اولویت‌ها"
-              />
-              <Select
-                label="دوره گزارش"
-                value={selectedPeriodFilter}
-                onChange={(value) => setSelectedPeriodFilter(value as TaskPeriod | "")}
-                options={TASK_PERIODS}
-                placeholder="همه دوره‌ها"
-              />
-            </div>
-
-            <DragDropContext onDragEnd={onDragEnd}>
-              <div className="grid gap-4 bg-[--surface-2]/40 p-4 lg:grid-cols-3">
-                {COLUMNS.map((col) => {
-                  const colTasks = filteredTasks.filter((t) => (t.status ?? "todo") === col.status);
-                  return (
-                    <div key={col.status} className={`flex flex-col rounded-2xl border ${col.border} ${col.colBg}`}>
-                      <div className={`flex items-center justify-between rounded-t-2xl bg-gradient-to-l ${col.headerGrad} px-4 py-3`}>
-                        <div className="flex items-center gap-2">
-                          <span className={`h-2.5 w-2.5 rounded-full ${col.dot}`} />
-                          <h3 className={`text-sm font-bold ${col.headerText}`}>{col.title}</h3>
-                        </div>
-                        <span className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${col.badge}`}>{colTasks.length}</span>
-                      </div>
-
-                      <Droppable droppableId={col.status}>
-                        {(provided, snapshot) => (
-                          <div
-                            ref={provided.innerRef}
-                            {...provided.droppableProps}
-                            className={`flex flex-col gap-2.5 p-2.5 min-h-[120px] transition-colors ${snapshot.isDraggingOver ? "bg-white/30 dark:bg-white/5" : ""}`}
-                          >
-                            {colTasks.length === 0 && !snapshot.isDraggingOver ? (
-                              <div className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed ${col.emptyBorder} bg-white/50 dark:bg-black/10 py-10`}>
-                                <CircleDashed size={28} className={`${col.headerText} opacity-30`} />
-                                <p className="mt-2 text-xs text-[--text-3]">گزارشی اینجا نیست</p>
-                              </div>
-                            ) : (
-                              colTasks.map((task, index) => {
-                                const tid = getId(task);
-                                const priority = taskPriorities[tid];
-                                const canClaim = isSpecialist && isUnassignedTask(task);
-                                return (
-                                  <Draggable key={tid} draggableId={tid} index={index}>
-                                    {(prov, snap) => (
-                                      <article
-                                        ref={prov.innerRef}
-                                        {...prov.draggableProps}
-                                        className={`rounded-xl border border-[--border] border-t-[3px] ${col.cardBorder} bg-[--surface] p-3.5 shadow-sm transition-all cursor-pointer ${snap.isDragging ? "shadow-xl shadow-black/15 rotate-1 scale-[1.02]" : "hover:-translate-y-0.5 hover:shadow-md hover:shadow-black/5"}`}
-                                        onClick={() => setSelectedTask(task)}
-                                      >
-                                        <div className="flex items-center justify-between">
-                                          <div className="flex items-center gap-1.5">
-                                            <div {...prov.dragHandleProps} className="text-[--text-3] hover:text-[--text-2] cursor-grab active:cursor-grabbing" onClick={(e) => e.stopPropagation()}>
-                                              <GripVertical size={14} />
-                                            </div>
-                                            {priority && (
-                                              <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${PRIORITY[priority].color}`}>
-                                                {PRIORITY[priority].label}
-                                              </span>
-                                            )}
-                                          </div>
-                                          <button className="flex h-6 w-6 items-center justify-center rounded-lg text-[--text-3] transition hover:bg-[--surface-2] hover:text-[--text-2]" type="button" onClick={(e) => { e.stopPropagation(); setSelectedTask(task); }}>
-                                            <MoreHorizontal size={14} />
-                                          </button>
-                                        </div>
-
-                                        <div className="mt-2.5 flex items-start gap-2">
-                                          {task.status === "done"
-                                            ? <CheckCircle2 size={15} className="mt-0.5 shrink-0 text-emerald-500" />
-                                            : task.status === "in_progress"
-                                            ? <div className="mt-1 h-3 w-3 shrink-0 rounded-full border-2 border-[#1f7a8c] border-t-transparent animate-spin" />
-                                            : <CircleDashed size={15} className="mt-0.5 shrink-0 text-[--text-3]" />
-                                          }
-                                          <h4 className="text-sm font-semibold leading-snug">{task.title}</h4>
-                                        </div>
-
-                                        <div className="mt-3 flex items-center justify-between">
-                                          <AssigneeStack users={task.assignedTo} />
-                                          <div className="flex items-center gap-1 rounded-md bg-[--surface-2] px-2 py-1 text-[10px] text-[--text-3]">
-                                            <CalendarDays size={10} />{formatDate(task.dueDate ?? task.createdAt)}
-                                          </div>
-                                        </div>
-
-                                        {canClaim && (
-                                          <button
-                                            className="mt-3 flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-[#b8dfe8] bg-[#e0f4f8] text-xs font-semibold text-[#1f7a8c] transition-all hover:bg-[#d0eef5] active:scale-[0.98] dark:border-[#1f5060] dark:bg-[#0f3040] dark:text-[#4fc3d5]"
-                                            onClick={(e) => { e.stopPropagation(); void claimTask(tid); }}
-                                            type="button"
-                                          >
-                                            <UserPlus size={12} /> برداشتن برای من
-                                          </button>
-                                        )}
-                                        {!canClaim && task.status !== "done" && (
-                                          <button
-                                            className={`mt-3 flex h-8 w-full items-center justify-center gap-1.5 rounded-lg border border-[--border] bg-[--surface-2] text-xs font-semibold text-[--text-2] transition-all ${col.btnHover} active:scale-[0.98]`}
-                                            onClick={(e) => { e.stopPropagation(); void moveTask(tid, nextStatus(task.status)); }} type="button"
-                                          >
-                                            {task.status === "todo" ? "شروع کار" : "تکمیل کردن"}
-                                            <ChevronLeft size={12} />
-                                          </button>
-                                        )}
-                                        {task.status === "done" && (
-                                          <div className="mt-3 flex items-center justify-center gap-1.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 py-1.5 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
-                                            <CheckCircle2 size={12} />تکمیل شد
-                                          </div>
-                                        )}
-                                      </article>
-                                    )}
-                                  </Draggable>
-                                );
-                              })
-                            )}
-                            {provided.placeholder}
-                          </div>
-                        )}
-                      </Droppable>
-                    </div>
-                  );
-                })}
-              </div>
-            </DragDropContext>
           </div>}
 
-          {/* Projects */}
-          {(activeView === "dashboard" || activeView === "projects") && <div className="overflow-hidden rounded-2xl border border-violet-200 dark:border-violet-900 bg-[--surface] shadow-md shadow-violet-500/8">
-            <div className="flex items-center justify-between border-b border-violet-100 dark:border-violet-900/50 bg-gradient-to-l from-violet-50 to-white dark:from-violet-950/30 dark:to-transparent px-5 py-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-violet-600 text-white shadow-sm shadow-violet-200 dark:shadow-violet-900">
-                  <FolderKanban size={17} />
+          {/* Specialist performance */}
+          {isSpecialist && activeView === "dashboard" && (() => {
+            const doneCount = tasks.filter((t) => t.status === "done").length;
+            const totalCount = tasks.length;
+            const rate = currentUser?.progressPercentage ?? (totalCount ? Math.round((doneCount / totalCount) * 100) : 0);
+            const ps = currentUser?.performanceStatus;
+            const psLabel = ps === "good" ? "خوب" : ps === "weak" ? "ضعیف" : ps === "normal" ? "متوسط" : "—";
+            const psClass = ps === "good" ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400"
+              : ps === "weak" ? "bg-red-50 text-red-600 dark:bg-red-950/40 dark:text-red-400"
+              : "bg-amber-50 text-amber-600 dark:bg-amber-950/40 dark:text-amber-400";
+            return (
+              <div className="rounded-2xl border border-[--border] bg-[--surface] p-5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <TrendingUp size={17} className="text-[#1f7a8c]" />
+                    <h2 className="font-bold">عملکرد من</h2>
+                  </div>
+                  <span className={`rounded-md px-2.5 py-1 text-xs font-bold ${psClass}`}>{psLabel}</span>
                 </div>
+                <div className="mt-3 flex items-center gap-2">
+                  <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-[--border]">
+                    <div className="h-full rounded-full bg-gradient-to-l from-[#1f7a8c] to-[#2a9db2] transition-all duration-700" style={{ width: `${rate}%` }} />
+                  </div>
+                  <span className="text-sm font-bold text-[#1f7a8c]">{rate}%</span>
+                </div>
+                <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+                  {[
+                    { l: "امتیاز", v: currentUser?.score ?? 0, c: "text-amber-600" },
+                    { l: "تکمیل‌شده", v: doneCount, c: "text-emerald-600" },
+                    { l: "کل پروژه", v: totalCount, c: "text-[--text]" },
+                  ].map((s) => (
+                    <div key={s.l} className="rounded-xl bg-[--surface-2] py-3">
+                      <p className={`text-xl font-bold ${s.c}`}>{s.v}</p>
+                      <p className="text-[11px] text-[--text-3]">{s.l}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Specialist projects under the board */}
+          {!isManager && activeView === "dashboard" && (
+            <div className="overflow-hidden rounded-2xl border border-indigo-200 dark:border-indigo-900 bg-[--surface] shadow-md shadow-indigo-500/8">
+              <div className="flex items-center gap-3 border-b border-indigo-100 dark:border-indigo-900/50 bg-gradient-to-l from-indigo-50 to-white dark:from-indigo-950/30 dark:to-transparent px-5 py-4">
+                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-indigo-600 text-white"><FolderKanban size={17} /></div>
                 <div>
                   <h2 className="font-bold text-[--text]">پروژه‌ها</h2>
-                  <p className="text-[11px] text-[--text-3]">{projects.length} پروژه فعال</p>
+                  <p className="text-[11px] text-[--text-3]">{tasks.length} پروژه واگذارشده · برای شروع و دانلود فایل کلیک کن</p>
                 </div>
               </div>
-              {isManager && (
-                <button className="flex h-9 items-center gap-1.5 rounded-xl bg-gradient-to-l from-[#1f7a8c] to-[#2491a5] px-4 text-sm font-semibold text-white shadow-sm shadow-[#1f7a8c]/20 transition-all active:scale-[0.98] hover:shadow-md" onClick={() => setShowProjectForm(!showProjectForm)} type="button">
-                  <Plus size={15} />پروژه جدید
-                </button>
-              )}
-            </div>
-
-            {isManager && showProjectForm && (
-              <div className="border-b border-[--border] bg-[--surface-2]/70 p-4">
-                <form className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_180px_200px_200px_auto]" onSubmit={createProject}>
-                  <Field label="عنوان پروژه *" name="projectTitle" value={projectTitle} onChange={setProjectTitle} required placeholder="مثلاً: ری‌دیزاین اپ" />
-                  <Field label="توضیحات" name="projectDescription" value={projectDescription} onChange={setProjectDescription} placeholder="اختیاری" />
-                  <Select label="حوزه کاری" value={projectWorkField} onChange={(value) => setProjectWorkField(value as WorkField)} options={WORK_FIELDS} placeholder="انتخاب حوزه" />
-                  <Select label="سرپرست *" value={projectSupervisorId} onChange={setProjectSupervisorId} options={users.filter((u) => u.roles === "supervisor").map((u) => [getId(u), userName(u)])} placeholder="انتخاب سرپرست" />
-                  <Select label="متخصص مسئول" value={projectAssigneeId} onChange={setProjectAssigneeId} options={users.filter((u) => u.roles === "specialist").map((u) => [getId(u), userName(u)])} placeholder="پروژه عمومی" />
-                  <div className="flex items-end gap-2">
-                    <button className="flex h-10 flex-1 items-center justify-center gap-2 rounded-lg bg-[--text] px-4 text-sm font-semibold text-[--surface] transition hover:opacity-90 disabled:opacity-50 lg:flex-none" disabled={!projectTitle.trim() || !projectSupervisorId} type="submit"><Plus size={15} />ایجاد</button>
-                    <button className="flex h-10 w-10 items-center justify-center rounded-lg border border-[--border] bg-[--surface] text-[--text-2] transition hover:bg-[--surface-2]" onClick={() => setShowProjectForm(false)} type="button"><X size={15} /></button>
-                  </div>
-                </form>
-              </div>
-            )}
-
-            <div className="grid gap-4 p-4 md:grid-cols-2">
-              {loadingData && projects.length === 0 ? (
-                Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)
-              ) : projects.length === 0 ? (
-                <EmptyState title="هنوز پروژه‌ای نداری" text={isManager ? "روی «پروژه جدید» بزن." : "هنوز پروژه‌ای تعریف نشده."} action={isManager ? { label: "ساخت اولین پروژه", onClick: () => setShowProjectForm(true) } : undefined} />
+              {tasks.length === 0 ? (
+                <p className="py-10 text-center text-sm text-[--text-3]">پروژه‌ای به شما واگذار نشده</p>
               ) : (
-                projects.map((project, i) => {
-                  const pid = getId(project);
-                  const prog = projectProgress[pid];
-                  return (
-                  <article
-                    key={pid}
-                    className="group overflow-hidden rounded-xl border border-[--border] bg-[--surface] transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-black/5 cursor-pointer"
-                    onClick={() => setSelectedProject(project)}
-                  >
-                    <div className={`relative h-16 bg-gradient-to-l ${PROJECT_COVERS[i % PROJECT_COVERS.length]} px-4 pt-3`}>
-                      <div className="absolute inset-0 opacity-10" style={{ backgroundImage: "radial-gradient(circle at 20% 50%, white 1px, transparent 1px)", backgroundSize: "20px 20px" }} />
-                      <div className="relative flex items-start justify-between">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/20 text-white border border-white/30 backdrop-blur-sm"><FolderKanban size={17} /></div>
-                        <div className="flex items-center gap-2">
-                          {prog && <span className="rounded-full bg-white/20 px-2.5 py-0.5 text-xs font-semibold text-white border border-white/20 backdrop-blur-sm">{prog.progressPercentage}%</span>}
-                          <span className="rounded-full bg-white/20 px-2.5 py-0.5 text-xs font-semibold text-white border border-white/20 backdrop-blur-sm">{statusLabel(project.status)}</span>
-                        </div>
+                <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {tasks.map((t) => (
+                    <button key={getId(t)} className="rounded-xl border border-[--border] border-t-[3px] border-t-indigo-500 bg-[--surface] p-3.5 text-right shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md" onClick={() => setSelectedTask(t)} type="button">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${COLUMNS.find((c) => c.status === t.status)?.badge ?? "bg-slate-100 text-slate-600"}`}>{statusLabel(t.status)}</span>
+                        {t.excelFile && <span className="flex items-center gap-1 rounded-md bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400"><FileSpreadsheet size={10} />اکسل</span>}
                       </div>
-                    </div>
-                    <div className="p-4">
-                      <h3 className="font-bold">{project.title}</h3>
-                      <p className="mt-0.5 line-clamp-1 text-xs text-[--text-3]">{project.description || "بدون توضیحات"}</p>
-                      {prog && (
-                        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[--border]">
-                          <div className="h-full rounded-full bg-[#1f7a8c]" style={{ width: `${prog.progressPercentage}%` }} />
-                        </div>
-                      )}
-                      <div className="mt-3 flex items-center justify-between border-t border-[--border] pt-3">
-                        <AssigneeStack users={[project.assigneeId, project.supervisorId].filter(Boolean) as Array<string | User>} fallback={project.owner} />
-                        <div className="flex flex-wrap gap-1.5" onClick={(e) => e.stopPropagation()}>
-                          {isManager && (
-                            <button className="flex items-center gap-1 rounded-lg bg-[#e8f4f7] px-2.5 py-1 text-[11px] font-semibold text-[#1f7a8c]" onClick={() => void loadProjectMembers(project)} type="button">
-                              <UserPlus size={11} />افراد
-                            </button>
-                          )}
-                          <span className="rounded-lg bg-[--surface-2] px-2.5 py-1 text-[11px] font-semibold text-[--text-2]">👥 {[project.owner, project.supervisorId, project.assigneeId].filter(Boolean).length}</span>
-                          <span className="rounded-lg bg-[--surface-2] px-2.5 py-1 text-[11px] font-semibold text-[--text-2]">✅ {prog?.totalTasks ?? project.tasks?.length ?? 0}</span>
-                          {isManager && (
-                            <>
-                              <button
-                                className={`rounded-lg px-2 py-1 text-[11px] font-semibold transition ${project.isArchived ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-600"}`}
-                                onClick={() => void managerApi.setProjectActivation(token, pid, !!project.isArchived).then(() => { setMessage("وضعیت پروژه تغییر کرد."); void loadData(); }).catch(() => setError("تغییر وضعیت ناموفق بود"))}
-                                type="button"
-                              >
-                                {project.isArchived ? "فعال‌سازی" : "آرشیو"}
-                              </button>
-                              <button className="rounded-lg bg-red-50 px-2 py-1 text-[11px] font-semibold text-red-600" onClick={() => void deleteProject(pid)} type="button">حذف</button>
-                            </>
-                          )}
-                        </div>
+                      <div className="mt-2.5 flex items-start gap-2">
+                        <FolderKanban size={15} className="mt-0.5 shrink-0 text-indigo-500" />
+                        <h4 className="text-sm font-semibold leading-snug">{t.title}</h4>
                       </div>
-                    </div>
-                  </article>
-                  );
-                })
+                      {t.description && <p className="mt-2 line-clamp-2 text-xs leading-5 text-[--text-3]">{t.description}</p>}
+                    </button>
+                  ))}
+                </div>
               )}
             </div>
-          </div>}
+          )}
 
           </>)}
 
         </main>
       </div>
 
-      {/* ─ Project Members Panel ──────────────────────────────────────────── */}
-      {membersProject && (
-        <>
-          <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm" onClick={() => setMembersProject(null)} />
-          <div className="fixed inset-y-0 left-0 z-50 flex w-full max-w-md flex-col bg-[--surface] shadow-2xl">
-            <div className="flex items-center justify-between border-b border-[--border] px-5 py-4">
-              <div>
-                <h3 className="font-bold">افراد پروژه</h3>
-                <p className="text-xs text-[--text-3]">{membersProject.title}</p>
-              </div>
-              <button className="flex h-8 w-8 items-center justify-center rounded-lg text-[--text-3] hover:bg-[--surface-2]" onClick={() => setMembersProject(null)} type="button">
-                <X size={18} />
-              </button>
+      {/* Center popup for a fresh notification */}
+      {popupNotif && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => setPopupNotif(null)}>
+          <div className="w-full max-w-sm rounded-2xl border border-[--border] bg-[--surface] p-6 text-center shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full bg-[#e8f4f7] text-[#1f7a8c] dark:bg-[#0f3040] dark:text-[#4fc3d5]">
+              <Bell size={26} />
             </div>
-            <div className="flex-1 overflow-y-auto p-5 space-y-4">
-              <div className="space-y-2">
-                {projectMembers.length === 0 ? (
-                  <p className="text-center text-xs text-[--text-3] py-4">فردی ثبت نشده</p>
-                ) : (
-                  projectMembers.map((m) => {
-                    const uid = getId(m.user);
-                    return (
-                      <div key={m.id ?? uid} className="flex items-center justify-between rounded-xl border border-[--border] px-4 py-3">
-                        <div className="flex items-center gap-3">
-                          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#1f7a8c] text-xs font-bold text-white">{initials(m.user)}</div>
-                          <div>
-                            <p className="text-sm font-semibold">{userName(m.user)}</p>
-                            <p className="text-xs text-[--text-3]">{m.role ?? "member"}</p>
-                          </div>
-                        </div>
-                        <span className="rounded-lg bg-[--surface-2] px-2.5 py-1 text-xs font-medium">{workFieldLabel(typeof m.user === "string" ? undefined : m.user?.workField)}</span>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
+            <h3 className="mt-4 text-lg font-bold text-[--text]">{popupNotif.title || "اعلان جدید"}</h3>
+            {popupNotif.message && <p className="mt-2 text-sm leading-relaxed text-[--text-2]">{popupNotif.message}</p>}
+            <div className="mt-5 flex gap-2">
+              <button
+                className="h-10 flex-1 rounded-lg bg-[#1f7a8c] text-sm font-semibold text-white transition hover:bg-[#196b7b]"
+                onClick={() => { const id = getId(popupNotif); setPopupNotif(null); void markNotificationRead(id); }}
+                type="button"
+              >باشه، دیدم</button>
             </div>
           </div>
-        </>
-      )}
-
-      {/* ─ Task Detail Panel ──────────────────────────────────────────────── */}
-      {selectedProject && (
-        <ProjectPanel
-          project={selectedProject}
-          progress={projectProgress[getId(selectedProject)]}
-          tasks={tasks.filter((t) => getId(t.projectId) === getId(selectedProject))}
-          users={users}
-          coverClass={PROJECT_COVERS[projects.findIndex((p) => getId(p) === getId(selectedProject)) % PROJECT_COVERS.length]}
-          isManager={isManager}
-          onArchive={() => {
-            const pid = getId(selectedProject);
-            void managerApi.setProjectActivation(token, pid, !!selectedProject.isArchived)
-              .then(() => { setMessage("وضعیت پروژه تغییر کرد."); void loadData(); setSelectedProject(null); })
-              .catch(() => setError("تغییر وضعیت ناموفق بود"));
-          }}
-          onDelete={() => { void deleteProject(getId(selectedProject)); setSelectedProject(null); }}
-          onManageMembers={() => { void loadProjectMembers(selectedProject); setSelectedProject(null); }}
-          onClose={() => setSelectedProject(null)}
-        />
+        </div>
       )}
 
       {selectedTask && (
         <TaskPanel
           task={selectedTask}
           users={users}
-          priority={taskPriorities[getId(selectedTask)]}
           canEditAssignments={isManager}
+          canComment={isManager}
           canClaim={isSpecialist && isUnassignedTask(selectedTask)}
-          onPriorityChange={(p) => {
-            setTaskPriorities((prev) => ({ ...prev, [getId(selectedTask)]: p }));
-            void updateTask(getId(selectedTask), { taskComment: `priority:${p}` });
+          onDownloadExcel={() => {
+            const ex = selectedTask.excelFile;
+            const exId = typeof ex === "string" ? ex : getId(ex);
+            if (!exId) return;
+            const fname = (typeof ex === "object" ? (ex.originalName || ex.fileName) : undefined) || selectedTask.file || "file.xlsx";
+            void excelApi.download(token, exId, fname).catch((err) => setError(err instanceof Error ? err.message : "دانلود ناموفق بود"));
           }}
+          onCommentChange={(c) => void updateTask(getId(selectedTask), { taskComment: c })}
           onClaim={() => void claimTask(getId(selectedTask))}
           onStatusChange={(s) => void moveTask(getId(selectedTask), s)}
           onDescriptionChange={(d) => void updateTask(getId(selectedTask), { description: d })}
@@ -2371,190 +2737,16 @@ export default function Home() {
   );
 }
 
-// ─── Project Detail Panel ─────────────────────────────────────────────────────
-function ProjectPanel({
-  project, progress, tasks, users, coverClass, isManager,
-  onArchive, onDelete, onManageMembers, onClose,
-}: {
-  project: Project;
-  progress?: ProjectProgress;
-  tasks: Task[];
-  users: User[];
-  coverClass: string;
-  isManager: boolean;
-  onArchive: () => void;
-  onDelete: () => void;
-  onManageMembers: () => void;
-  onClose: () => void;
-}) {
-  const doneTasks = tasks.filter((t) => t.status === "done").length;
-  const inProgressTasks = tasks.filter((t) => t.status === "in_progress").length;
-  const todoTasks = tasks.filter((t) => (t.status ?? "todo") === "todo").length;
-  const progressPct = progress?.progressPercentage ?? (tasks.length ? Math.round((doneTasks / tasks.length) * 100) : 0);
-
-  return (
-    <>
-      <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm dark:bg-black/50" onClick={onClose} />
-      <div className="fixed inset-y-0 left-0 z-50 flex w-full max-w-sm flex-col bg-[--surface] shadow-2xl">
-
-        {/* Cover header */}
-        <div className={`relative bg-gradient-to-l ${coverClass} px-5 pt-5 pb-10`}>
-          <div className="absolute inset-0 opacity-10" style={{ backgroundImage: "radial-gradient(circle at 20% 50%, white 1px, transparent 1px)", backgroundSize: "20px 20px" }} />
-          <div className="relative flex items-start justify-between">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white/20 text-white border border-white/30 backdrop-blur-sm">
-              <FolderKanban size={20} />
-            </div>
-            <button className="flex h-8 w-8 items-center justify-center rounded-lg bg-white/20 text-white hover:bg-white/30 transition" onClick={onClose} type="button">
-              <X size={16} />
-            </button>
-          </div>
-          <div className="relative mt-3">
-            <h2 className="text-lg font-bold text-white leading-snug">{project.title}</h2>
-            <div className="mt-1 flex items-center gap-2">
-              <span className="rounded-full bg-white/20 border border-white/20 px-2.5 py-0.5 text-xs font-semibold text-white">{statusLabel(project.status)}</span>
-              {project.isArchived && <span className="rounded-full bg-black/20 border border-white/10 px-2.5 py-0.5 text-xs font-semibold text-white/80">آرشیو شده</span>}
-            </div>
-          </div>
-        </div>
-
-        {/* Progress bar floating over cover */}
-        <div className="mx-5 -mt-5 relative z-10 rounded-xl bg-[--surface] border border-[--border] shadow-lg p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-semibold text-[--text-2]">پیشرفت کلی</span>
-            <span className="text-sm font-bold text-[#1f7a8c]">{progressPct}%</span>
-          </div>
-          <div className="h-2 overflow-hidden rounded-full bg-[--border]">
-            <div className="h-full rounded-full bg-gradient-to-l from-[#1f7a8c] to-[#2a9db2] transition-all duration-700" style={{ width: `${progressPct}%` }} />
-          </div>
-          <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-            {[
-              { l: "در انتظار", v: todoTasks, c: "text-slate-500" },
-              { l: "جاری", v: inProgressTasks, c: "text-[#1f7a8c]" },
-              { l: "تمام", v: doneTasks, c: "text-emerald-500" },
-            ].map((s) => (
-              <div key={s.l} className="rounded-lg bg-[--surface-2] py-2">
-                <p className={`text-base font-bold ${s.c}`}>{s.v}</p>
-                <p className="text-[10px] text-[--text-3]">{s.l}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-5 space-y-5">
-
-          {/* Description */}
-          {project.description && (
-            <div>
-              <p className="mb-1.5 text-xs font-semibold text-[--text-3]">توضیحات</p>
-              <p className="rounded-xl bg-[--surface-2] px-3 py-2.5 text-sm text-[--text] leading-relaxed">{project.description}</p>
-            </div>
-          )}
-
-          {/* Members */}
-          <div>
-            <div className="mb-2 flex items-center justify-between">
-              <p className="text-xs font-semibold text-[--text-3]">افراد ({[project.owner, project.supervisorId, project.assigneeId].filter(Boolean).length})</p>
-              {isManager && (
-                <button className="text-xs font-semibold text-[#1f7a8c] hover:underline" onClick={onManageMembers} type="button">
-                  مشاهده افراد
-                </button>
-              )}
-            </div>
-            {[project.owner, project.supervisorId, project.assigneeId].filter(Boolean).length > 0 ? (
-              <div className="space-y-2">
-                {([project.owner, project.supervisorId, project.assigneeId].filter(Boolean) as Array<string | User>).slice(0, 5).map((m, i) => {
-                  const id = typeof m === "string" ? m : getId(m);
-                  const fullUser = users.find((u) => getId(u) === id) ?? (typeof m === "object" ? m : undefined);
-                  return (
-                    <div key={i} className="flex items-center gap-3 rounded-xl bg-[--surface-2] px-3 py-2.5">
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#1f7a8c] to-[#165e6d] text-xs font-bold text-white">
-                        {initials(fullUser)}
-                      </div>
-                      <div>
-                        <p className="text-sm font-semibold">{userName(fullUser)}</p>
-                        <p className="text-xs text-[--text-3]">{fullUser?.roles || "specialist"}</p>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="rounded-xl border border-dashed border-[--border] p-3 text-center text-xs text-[--text-3]">فردی ندارد</div>
-            )}
-          </div>
-
-          {/* Tasks list */}
-          <div>
-            <p className="mb-2 text-xs font-semibold text-[--text-3]">گزارش‌ها ({tasks.length})</p>
-            {tasks.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-[--border] p-3 text-center text-xs text-[--text-3]">گزارشی ندارد</div>
-            ) : (
-              <div className="space-y-1.5">
-                {tasks.map((t) => (
-                  <div key={getId(t)} className="flex items-center gap-3 rounded-xl border border-[--border] bg-[--surface-2] px-3 py-2.5">
-                    {t.status === "done"
-                      ? <CheckCircle2 size={14} className="shrink-0 text-emerald-500" />
-                      : t.status === "in_progress"
-                      ? <div className="h-3 w-3 shrink-0 rounded-full border-2 border-[#1f7a8c] border-t-transparent animate-spin" />
-                      : <CircleDashed size={14} className="shrink-0 text-[--text-3]" />
-                    }
-                    <p className="flex-1 truncate text-sm font-medium">{t.title}</p>
-                    <span className={`shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-bold ${COLUMNS.find((c) => c.status === t.status)?.badge ?? "bg-slate-100 text-slate-600"}`}>
-                      {statusLabel(t.status)}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Meta */}
-          <div className="rounded-xl bg-[--surface-2] p-4 space-y-3 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-[--text-3]">مالک پروژه</span>
-              <span className="font-semibold">{userName(project.owner)}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[--text-3]">وضعیت</span>
-              <span className="font-semibold">{statusLabel(project.status)}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[--text-3]">کل گزارش‌ها</span>
-              <span className="font-semibold">{progress?.totalTasks ?? tasks.length}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Footer — manager only */}
-        {isManager && (
-          <div className="border-t border-[--border] p-4 space-y-2">
-            <button
-              className={`flex h-10 w-full items-center justify-center gap-2 rounded-xl border text-sm font-semibold transition hover:opacity-80 ${project.isArchived ? "border-emerald-200 text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30" : "border-slate-200 text-slate-600 bg-slate-50 dark:bg-slate-800 dark:border-slate-700"}`}
-              onClick={onArchive} type="button"
-            >
-              {project.isArchived ? "فعال‌سازی پروژه" : "آرشیو پروژه"}
-            </button>
-            <button
-              className="flex h-9 w-full items-center justify-center rounded-xl border border-red-200 text-sm font-semibold text-red-600 transition hover:bg-red-50 dark:border-red-900 dark:hover:bg-red-950/40"
-              onClick={onDelete} type="button"
-            >
-              حذف پروژه
-            </button>
-          </div>
-        )}
-      </div>
-    </>
-  );
-}
-
 // ─── Task Detail Panel ────────────────────────────────────────────────────────
 function TaskPanel({
-  task, users, priority, canEditAssignments, canClaim, onPriorityChange, onStatusChange, onDescriptionChange, onAssign, onUnassign, onClaim, onDelete, onClose,
+  task, users, canEditAssignments, canComment, canClaim, onDownloadExcel, onCommentChange, onStatusChange, onDescriptionChange, onAssign, onUnassign, onClaim, onDelete, onClose,
 }: {
-  task: Task; users: User[]; priority?: Priority;
+  task: Task; users: User[];
   canEditAssignments: boolean;
+  canComment: boolean;
   canClaim: boolean;
-  onPriorityChange: (p: Priority) => void;
+  onDownloadExcel: () => void;
+  onCommentChange: (c: string) => void;
   onStatusChange: (s: string) => void;
   onDescriptionChange: (d: string) => void;
   onAssign: (userId: string) => void;
@@ -2566,7 +2758,23 @@ function TaskPanel({
   const overlayRef = useRef<HTMLDivElement>(null);
   const [desc, setDesc] = useState(task.description ?? "");
   const [descEditing, setDescEditing] = useState(false);
+  const [comment, setComment] = useState(task.taskComment ?? "");
+  const [commentEditing, setCommentEditing] = useState(false);
   const [assignSelect, setAssignSelect] = useState("");
+  const [timerRunning, setTimerRunning] = useState(false);
+  const [timerSeconds, setTimerSeconds] = useState(0);
+
+  useEffect(() => {
+    if (!timerRunning) return;
+    const id = window.setInterval(() => setTimerSeconds((s) => s + 1), 1000);
+    return () => window.clearInterval(id);
+  }, [timerRunning]);
+
+  const fmtTimer = (s: number) => {
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${pad(h)}:${pad(m)}:${pad(sec)}`;
+  };
 
   const assignedIds = (task.assignedTo ?? []).map((u) => typeof u === "string" ? u : getId(u));
   const unassignedUsers = users.filter((u) => !assignedIds.includes(getId(u)));
@@ -2590,6 +2798,33 @@ function TaskPanel({
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
+          {/* Timer */}
+          <div className="rounded-xl border border-[--border] bg-[--surface-2] p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Clock size={15} className="text-[#1f7a8c]" />
+                <span className="text-xs font-semibold text-[--text-2]">زمان کار</span>
+              </div>
+              <span className="font-mono text-lg font-bold tracking-wider text-[--text]" dir="ltr">{fmtTimer(timerSeconds)}</span>
+            </div>
+            <div className="mt-3 flex gap-2">
+              {!timerRunning ? (
+                <button className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg bg-[#1f7a8c] text-sm font-semibold text-white transition hover:bg-[#196b7b]" onClick={() => setTimerRunning(true)} type="button">
+                  <Play size={14} /> {timerSeconds > 0 ? "ادامه" : "شروع"}
+                </button>
+              ) : (
+                <button className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg bg-amber-500 text-sm font-semibold text-white transition hover:bg-amber-600" onClick={() => setTimerRunning(false)} type="button">
+                  <Pause size={14} /> توقف
+                </button>
+              )}
+              {timerSeconds > 0 && (
+                <button className="flex h-9 items-center justify-center gap-1.5 rounded-lg border border-[--border] bg-[--surface] px-4 text-sm font-semibold text-[--text-2] transition hover:bg-[--surface-2]" onClick={() => { setTimerRunning(false); setTimerSeconds(0); }} type="button">
+                  ریست
+                </button>
+              )}
+            </div>
+          </div>
+
           {/* Title */}
           <div>
             <div className="flex items-start gap-2">
@@ -2664,22 +2899,45 @@ function TaskPanel({
             </div>
           </div>
 
-          {/* Priority */}
-          <div>
-            <p className="mb-2 text-xs font-semibold text-[--text-3]">اولویت</p>
-            <div className="flex flex-wrap gap-2">
-              {(Object.keys(PRIORITY) as Priority[]).map((p) => (
-                <button
-                  key={p}
-                  className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all ${priority === p ? PRIORITY[p].color : "border-[--border] text-[--text-2] hover:bg-[--surface-2]"}`}
-                  onClick={() => onPriorityChange(p)}
-                  type="button"
-                >
-                  <Flag size={11} />
-                  {PRIORITY[p].label}
-                </button>
-              ))}
+          {/* Excel attachment */}
+          {task.excelFile && (
+            <div>
+              <p className="mb-2 text-xs font-semibold text-[--text-3]">فایل اکسل</p>
+              <button
+                className="flex h-10 w-full items-center justify-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100 dark:border-emerald-900 dark:bg-emerald-950/30 dark:text-emerald-400"
+                onClick={onDownloadExcel} type="button"
+              >
+                <Download size={15} /> دانلود فایل اکسل
+              </button>
             </div>
+          )}
+
+          {/* Comment */}
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-xs font-semibold text-[--text-3]">کامنت مدیر</p>
+              {canComment && !commentEditing && (
+                <button className="text-xs font-semibold text-[#1f7a8c] hover:underline" onClick={() => setCommentEditing(true)} type="button">
+                  {comment.trim() ? "ویرایش" : "افزودن"}
+                </button>
+              )}
+            </div>
+            {commentEditing ? (
+              <div className="space-y-2">
+                <textarea
+                  className="min-h-[80px] w-full rounded-xl border border-[--border] bg-[--surface] px-3 py-2.5 text-sm text-[--text] outline-none transition focus:border-[#1f7a8c] focus:ring-2 focus:ring-[#1f7a8c]/15"
+                  value={comment} onChange={(e) => setComment(e.target.value)} placeholder="کامنت خود را بنویسید…"
+                />
+                <div className="flex gap-2">
+                  <button className="h-9 rounded-lg bg-[#1f7a8c] px-4 text-xs font-semibold text-white" onClick={() => { onCommentChange(comment.trim()); setCommentEditing(false); }} type="button">ذخیره</button>
+                  <button className="h-9 rounded-lg border border-[--border] bg-[--surface-2] px-4 text-xs font-semibold" onClick={() => { setComment(task.taskComment ?? ""); setCommentEditing(false); }} type="button">انصراف</button>
+                </div>
+              </div>
+            ) : (
+              <p className="rounded-xl bg-[--surface-2] px-3 py-2.5 text-sm leading-relaxed text-[--text] whitespace-pre-wrap">
+                {comment.trim() || <span className="text-[--text-3]">کامنتی ثبت نشده</span>}
+              </p>
+            )}
           </div>
 
           {/* Assignees */}
@@ -2763,12 +3021,6 @@ function TaskPanel({
                 {statusLabel(task.status)}
               </span>
             </div>
-            {priority && (
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-[--text-3]">اولویت</span>
-                <span className={`rounded-md px-2 py-0.5 text-[11px] font-bold ${PRIORITY[priority].color}`}>{PRIORITY[priority].label}</span>
-              </div>
-            )}
           </div>
         </div>
 
