@@ -17,6 +17,7 @@ export type User = {
 
 export type WorkField = "it" | "human_resources" | "finance" | "sales" | "operations";
 export type FixedTaskRecurrence = "daily" | "weekly" | "monthly";
+export type FixedTaskStatus = "todo" | "in_progress" | "done";
 export type DeadlineStatus = "overdue" | "within_deadline";
 
 export type Task = {
@@ -308,6 +309,8 @@ export type FixedTask = {
   recurrence: FixedTaskRecurrence;
   description?: string;
   isActive?: boolean;
+  status?: FixedTaskStatus;
+  doneTime?: string;
   lastGeneratedAt?: string;
   nextRunAt?: string;
   sourceExcel?: string;
@@ -526,6 +529,9 @@ export const fixedTaskApi = {
     request<FixedTask>("/fixed-tasks", { method: "POST", body: JSON.stringify(body) }, token),
   update: (token: string, id: string, body: Record<string, unknown>) =>
     request<FixedTask>(`/fixed-tasks/${id}`, { method: "PATCH", body: JSON.stringify(body) }, token),
+  // Assignee (specialist) may PATCH only the status field — board drag & drop.
+  updateStatus: (token: string, id: string, status: FixedTaskStatus) =>
+    request<FixedTask>(`/fixed-tasks/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }, token),
   delete: (token: string, id: string) =>
     request(`/fixed-tasks/${id}`, { method: "DELETE" }, token),
   incompleteReport: (token: string, params?: Record<string, string | number | boolean | undefined>) =>

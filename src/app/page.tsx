@@ -59,6 +59,7 @@ import {
   supervisorApi,
   taskApi,
   type FixedTask,
+  type FixedTaskStatus,
   type IncompleteFixedTask,
   userApi,
   type ExcelFile,
@@ -1043,7 +1044,20 @@ export default function Home() {
     if (!destination) return;
     if (destination.droppableId === source.droppableId && destination.index === source.index) return;
     if (destination.droppableId !== source.droppableId) {
-      void moveTask(draggableId, destination.droppableId);
+      void moveFixedTask(draggableId, destination.droppableId as FixedTaskStatus);
+    }
+  }
+
+  // Specialist drags a fixed report between columns → assignee-only status PATCH.
+  async function moveFixedTask(id: string, status: FixedTaskStatus) {
+    const prev = fixedTasks;
+    setFixedTasks((list) => list.map((ft) => getId(ft) === id ? { ...ft, status } : ft));
+    try {
+      const updated = await fixedTaskApi.updateStatus(token, id, status);
+      setFixedTasks((list) => list.map((ft) => getId(ft) === id ? { ...ft, ...updated } : ft));
+    } catch (err) {
+      setFixedTasks(prev);
+      setError(err instanceof Error ? err.message : "تغییر وضعیت گزارش ناموفق بود");
     }
   }
 
@@ -2612,63 +2626,80 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="grid gap-4 bg-[--surface-2]/40 p-4 lg:grid-cols-3">
-              {COLUMNS.map((col) => {
-                const allItems = col.status === "todo" ? filteredFixedTemplates : [];
-                const items = boardShowAll ? allItems : allItems.slice(0, 8);
-                return (
-                  <div key={col.status} className={`flex flex-col rounded-2xl border ${col.border} ${col.colBg}`}>
-                    <div className={`flex items-center justify-between rounded-t-2xl bg-gradient-to-l ${col.headerGrad} px-4 py-3`}>
-                      <div className="flex items-center gap-2">
-                        <span className={`h-2.5 w-2.5 rounded-full ${col.dot}`} />
-                        <h3 className={`text-sm font-bold ${col.headerText}`}>{col.title}</h3>
-                      </div>
-                      <span className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${col.badge}`}>{allItems.length}</span>
-                    </div>
-                    <div className="flex flex-col gap-2.5 p-2.5 min-h-[120px]">
-                      {items.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-[--border] py-10">
-                          <CircleDashed size={26} className="text-[--text-3] opacity-30" />
-                          <p className="mt-2 text-xs text-[--text-3]">گزارشی نیست</p>
+            <DragDropContext onDragEnd={onDragEnd}>
+              <div className="grid gap-4 bg-[--surface-2]/40 p-4 lg:grid-cols-3">
+                {COLUMNS.map((col) => {
+                  const allItems = filteredFixedTemplates.filter((ft) => (ft.status ?? "todo") === col.status);
+                  const items = boardShowAll ? allItems : allItems.slice(0, 8);
+                  return (
+                    <div key={col.status} className={`flex flex-col rounded-2xl border ${col.border} ${col.colBg}`}>
+                      <div className={`flex items-center justify-between rounded-t-2xl bg-gradient-to-l ${col.headerGrad} px-4 py-3`}>
+                        <div className="flex items-center gap-2">
+                          <span className={`h-2.5 w-2.5 rounded-full ${col.dot}`} />
+                          <h3 className={`text-sm font-bold ${col.headerText}`}>{col.title}</h3>
                         </div>
-                      ) : items.map((ft) => (
-                        <article
-                          key={getId(ft)}
-                          className={`rounded-xl border border-[--border] border-t-[3px] border-t-[#1f7a8c] bg-[--surface] p-3.5 shadow-sm transition-all ${isManager ? "cursor-pointer hover:-translate-y-0.5 hover:shadow-md" : ""}`}
-                          onClick={isManager ? () => { setActiveView("fixed-reports"); openFixedTaskForm(ft); } : undefined}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="rounded-md border border-[#b8dfe8] bg-[#e8f4f7] px-1.5 py-0.5 text-[10px] font-bold text-[#1f7a8c] dark:border-[#1f5060] dark:bg-[#0f3040] dark:text-[#4fc3d5]">ثابت · {recurrenceLabel(ft.recurrence)}</span>
-                            {ft.nextRunAt && new Date(ft.nextRunAt) < new Date()
-                              ? <span className="rounded-md bg-red-50 px-1.5 py-0.5 text-[10px] font-bold text-red-600 dark:bg-red-950/40 dark:text-red-400">مهلت گذشته</span>
-                              : <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${ft.isActive !== false ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400" : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"}`}>{ft.isActive !== false ? "فعال" : "غیرفعال"}</span>}
-                          </div>
-                          <div className="mt-2.5 flex items-start gap-2">
-                            <ClipboardList size={15} className="mt-0.5 shrink-0 text-[#1f7a8c]" />
-                            <h4 className="text-sm font-semibold leading-snug">{ft.title}</h4>
-                          </div>
-                          {ft.description && <p className="mt-2 line-clamp-2 text-xs leading-5 text-[--text-3]">{ft.description}</p>}
-                          <div className="mt-3 flex items-center justify-between gap-2">
-                            <AssigneeStack users={ft.assignedTo ? [ft.assignedTo] : []} />
-                            {ft.nextRunAt && (
-                              <div className="flex items-center gap-1 rounded-md bg-[--surface-2] px-2 py-1 text-[10px] text-[--text-3]"><CalendarDays size={10} />{formatDate(ft.nextRunAt)}</div>
+                        <span className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${col.badge}`}>{allItems.length}</span>
+                      </div>
+                      <Droppable droppableId={col.status} isDropDisabled={!isSpecialist}>
+                        {(dropProvided, dropSnapshot) => (
+                          <div
+                            ref={dropProvided.innerRef}
+                            {...dropProvided.droppableProps}
+                            className={`flex flex-col gap-2.5 p-2.5 min-h-[120px] transition-colors ${dropSnapshot.isDraggingOver ? "bg-[#1f7a8c]/5" : ""}`}
+                          >
+                            {items.length === 0 ? (
+                              <div className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-[--border] py-10">
+                                <CircleDashed size={26} className="text-[--text-3] opacity-30" />
+                                <p className="mt-2 text-xs text-[--text-3]">گزارشی نیست</p>
+                              </div>
+                            ) : items.map((ft, idx) => (
+                              <Draggable key={getId(ft)} draggableId={getId(ft)} index={idx} isDragDisabled={!isSpecialist}>
+                                {(dragProvided, dragSnapshot) => (
+                                  <article
+                                    ref={dragProvided.innerRef}
+                                    {...dragProvided.draggableProps}
+                                    {...dragProvided.dragHandleProps}
+                                    className={`rounded-xl border border-[--border] border-t-[3px] border-t-[#1f7a8c] bg-[--surface] p-3.5 shadow-sm transition-all ${isManager ? "cursor-pointer hover:-translate-y-0.5 hover:shadow-md" : ""} ${isSpecialist ? "cursor-grab active:cursor-grabbing" : ""} ${dragSnapshot.isDragging ? "shadow-lg ring-2 ring-[#1f7a8c]/30" : ""}`}
+                                    onClick={isManager ? () => { setActiveView("fixed-reports"); openFixedTaskForm(ft); } : undefined}
+                                  >
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="rounded-md border border-[#b8dfe8] bg-[#e8f4f7] px-1.5 py-0.5 text-[10px] font-bold text-[#1f7a8c] dark:border-[#1f5060] dark:bg-[#0f3040] dark:text-[#4fc3d5]">ثابت · {recurrenceLabel(ft.recurrence)}</span>
+                                      {ft.nextRunAt && new Date(ft.nextRunAt) < new Date()
+                                        ? <span className="rounded-md bg-red-50 px-1.5 py-0.5 text-[10px] font-bold text-red-600 dark:bg-red-950/40 dark:text-red-400">مهلت گذشته</span>
+                                        : <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold ${ft.isActive !== false ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400" : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"}`}>{ft.isActive !== false ? "فعال" : "غیرفعال"}</span>}
+                                    </div>
+                                    <div className="mt-2.5 flex items-start gap-2">
+                                      <ClipboardList size={15} className="mt-0.5 shrink-0 text-[#1f7a8c]" />
+                                      <h4 className="text-sm font-semibold leading-snug">{ft.title}</h4>
+                                    </div>
+                                    {ft.description && <p className="mt-2 line-clamp-2 text-xs leading-5 text-[--text-3]">{ft.description}</p>}
+                                    <div className="mt-3 flex items-center justify-between gap-2">
+                                      <AssigneeStack users={ft.assignedTo ? [ft.assignedTo] : []} />
+                                      {ft.nextRunAt && (
+                                        <div className="flex items-center gap-1 rounded-md bg-[--surface-2] px-2 py-1 text-[10px] text-[--text-3]"><CalendarDays size={10} />{formatDate(ft.nextRunAt)}</div>
+                                      )}
+                                    </div>
+                                  </article>
+                                )}
+                              </Draggable>
+                            ))}
+                            {dropProvided.placeholder}
+                            {allItems.length > 8 && (
+                              <button
+                                className="mt-1 w-full rounded-lg border border-[--border] bg-[--surface-2] py-2 text-xs font-semibold text-[#1f7a8c] transition hover:bg-[--surface]"
+                                onClick={() => setBoardShowAll((v) => !v)} type="button"
+                              >
+                                {boardShowAll ? "نمایش کمتر" : `نمایش بیشتر (${allItems.length - 8} مورد دیگر)`}
+                              </button>
                             )}
                           </div>
-                        </article>
-                      ))}
-                      {allItems.length > 8 && (
-                        <button
-                          className="mt-1 w-full rounded-lg border border-[--border] bg-[--surface-2] py-2 text-xs font-semibold text-[#1f7a8c] transition hover:bg-[--surface]"
-                          onClick={() => setBoardShowAll((v) => !v)} type="button"
-                        >
-                          {boardShowAll ? "نمایش کمتر" : `نمایش بیشتر (${allItems.length - 8} مورد دیگر)`}
-                        </button>
-                      )}
+                        )}
+                      </Droppable>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            </DragDropContext>
           </div>}
 
           {/* Specialist performance */}
